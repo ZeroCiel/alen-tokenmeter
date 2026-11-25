@@ -184,7 +184,9 @@ function New-ModelRow([string]$name,[string]$right,[double]$frac,$fillC,[string]
   $rp.BackColor=$C.mrow
 
   $short = $name
-  if($short.Length -gt 30){ $short = $short.Substring(0,29) + '…' }
+  $slash = $short.LastIndexOf('/')
+  if($slash -gt 0 -and $slash -le 26){ $short = $short.Substring($slash + 1) }
+  if($short.Length -gt 34){ $short = $short.Substring(0,33) + '…' }
 
   $nm = New-Object System.Windows.Forms.Label
   $nm.Text=$short; $nm.AutoSize=$false; $nm.Size=New-Object Drawing.Size(176,18)
