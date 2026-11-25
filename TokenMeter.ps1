@@ -316,6 +316,16 @@ function Build-Rows{
       elseif($t.models){ foreach($m in @($t.models)){ $mdl += [pscustomobject]@{ name=[string]$m; tier='?'; usable=$true; quota=$null; note='' } } }
 
       $provOk = ($t.status -eq 'active')
+      if($provOk -and $mdl.Count -gt 0){
+        $anyOk = $false
+        foreach($m in $mdl){
+          $u = $true
+          if($null -ne $m.usable){ $u = [bool]$m.usable }
+          if($u){ $anyOk = $true; break }
+        }
+        if(-not $anyOk){ $dot=$C.red; $fill=$C.red; $frac=0.04; $right='全部不可用' }
+      }
+
       $exp = [bool]$script:expanded[$t.id]
       $script:provIds += $t.id
 
@@ -332,7 +342,11 @@ function Build-Rows{
             $mrc=$C.gray; $mfill=$C.gray; $mfrac=0.02
             if($q -and $null -ne $q.total -and [double]$q.total -gt 0 -and [double]$q.remaining -le 0){
               $mright='已用完'; $mfill=$C.red; $mrc=$C.red
-            } else {
+            }
+            elseif($m.probe -and -not [bool]$m.probe.ok){
+              $mright='不可用'; $mfill=$C.red; $mrc=$C.red
+            }
+            else{
               $mright='不启用'
             }
           }
@@ -352,6 +366,10 @@ function Build-Rows{
           $mtip = [string]$m.name
           if($m.tier){ $mtip += "`n档位: $($m.tier)" }
           if($m.note){ $mtip += "`n$($m.note)" }
+          if($m.probe -and $m.probe.at){
+            if($m.probe.ok){ $mtip += "`n探活: $($m.probe.at) OK $($m.probe.ms)ms" }
+            else { $mtip += "`n探活: $($m.probe.at) 失败 [$($m.probe.status)] $($m.probe.error)" }
+          }
           if(-not $provOk){ $mtip += "`n线路状态: $($t.status)" }
           New-ModelRow ([string]$m.name) $mright $mfrac $mfill $mtip $y $usable $mrc
           $y += $MODELH + 2

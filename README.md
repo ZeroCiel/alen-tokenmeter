@@ -147,11 +147,44 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -WindowStyle Hidden -File
 | 展开后看不全 | 窗口高度自动封顶到工作区高度，面板内出现滚动条 |
 | 模型全显示「共享池」 | 该线路没有按模型额度接口，只有线路级共享额度 |
 
+## 模型探活（probe_models.py）
+
+```powershell
+python probe_models.py               # 每个模型发一条最小请求，结果写回 TOKENS.json
+python probe_models.py --dry-run     # 只打印，不写
+python probe_models.py --only zhipu  # 只探一条线路
+python probe_models.py --timeout 120 # 慢线路（GitCode 冷启动 ~38s）
+```
+
+- 读 `TOKENS.json.model_details` + `opencode.json` 的 baseURL/apiKey（zhipu 回退 `CHATGPT_API_KEY`，DS 官方回退 `DEEPSEEK_API_KEY`）
+- 写回 `model_details[].probe = {at, ok, status, ms, error}`，并重算 `usable`
+  （`usable = probe.ok`，但 C 档且不在 `model_policy.keep` 里仍为 false）
+- 探活线程池默认 5，单条超时 30s；失败是数据不是异常，退出码始终 0
+
+**2026-11-25 23:37 全量结果（27 个模型，8 个 200）**
+
+| 线路 | 可用 | 说明 |
+|---|---|---|
+| MoMA 移动云 | 3/3 | 全部 200（829ms–1.7s），流式/非流式都通 |
+| 七牛活动 | 0/1 | `model_not_found`：conatus-free 已没有可用通道 |
+| AMD 云 | 3/5 | GLM-5.3-Flash / MiMo-V2.6-Flash / Gemma-4-31B-IT 200；V4.1-Flash 429 满载，Qwen3.8-Flash-Next 404 |
+| 魔搭 | 0/4 | 全部 429 `insufficient balance` |
+| 智谱 | 1/3 | glm-4-flash 200；4.5-air / 4.6v 429/1113 余额不足 |
+| Magpie Zen | 0/7 | 全部 429 `Free usage limit reached` |
+| SCNet 套餐 | 1/1 | 200 |
+| DS 官方 | 0/2 | 402 余额为负 |
+| GitCode Lite | 2/2 | 200，但冷启动约 38s（默认 30s 超时会误判） |
+
+**智谱上下文实测（2026-11-25 23:47）**：glm-4-flash 在 114k / 131k prompt tokens 下均 200，
+多轮 60k + 流式 + tools 也 200。客户端报「token expired or incorrect」不是智谱返回的（同 key 直连 200），
+应查客户端模型 id / key 注入。
+
 ## 文件
 
 | 文件 | 用途 |
 |---|---|
 | `TokenMeter.ps1` | 主程序 |
+| `probe_models.py` | 全模型探活，结果写回台账 |
 | `start.ps1` / `stop.ps1` | 后台启动 / 退出 |
 | `meter.ico` | 图标 |
 | `_mkicon.py` | 图标生成脚本（可选） |
