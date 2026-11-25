@@ -186,6 +186,10 @@ function Build-Rows{
         if($ok){ $dot=$C.green; $fill=$C.green } else { $dot=$C.orange; $fill=$C.orange; $right='探活失败·'+$right }
         $tip += "`n每日 1 积分仅够最小探测, 编码活优先其他免费线"
       }
+      elseif($t.id -eq 'zhipu'){
+        $right='免费档可用'; $dot=$C.green; $fill=$C.green
+        $tip += "`n付费模型 4.5-air/4.6v 资源包已用完(429/1113); 按次包剩 18/99, 12-20 到期"
+      }
       elseif($t.expires_at){
         $exp = [DateTimeOffset]::Parse($t.expires_at, [Globalization.CultureInfo]::InvariantCulture)
         $rem = $exp - $now
