@@ -1,0 +1,13 @@
+{
+  "timestamp": "2026-11-25T10:00:00+08:00",
+  "lines": {
+    "amd": { "ok": true, "latency_ms": 420 },
+    "moma": { "ok": false, "error": "upstream 502" },
+    "qiniu": { "ok": true },
+    "zhipu": { "ok": true },
+    "magpie": { "ok": true },
+    "modelscope": { "ok": true }
+  },
+  "recommended_order": ["zhipu", "moma", "qiniu"],
+  "task_pool": []
+}

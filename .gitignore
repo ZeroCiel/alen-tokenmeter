@@ -1,0 +1,10 @@
+# runtime log (may contain local paths / provider names)
+*.log
+tokenmeter.log
+
+# OS / editor noise
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+__pycache__/

@@ -1,0 +1,7 @@
+{
+  "timestamp": "2026-11-25T09:00:00+08:00",
+  "keys": [
+    { "name": "demo-trial", "auth": "ok", "balance": "" },
+    { "name": "deepseek-official", "auth": "401", "balance": "¥-0.03" }
+  ]
+}
