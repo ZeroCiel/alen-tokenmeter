@@ -8,3 +8,6 @@ desktop.ini
 .vscode/
 .idea/
 __pycache__/
+
+# local version backups
+TokenMeter.ps1.v*bak
