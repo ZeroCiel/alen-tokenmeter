@@ -1,5 +1,5 @@
-﻿param([switch]$Query)
-# ALEN TokenMeter 额度条 v1.5.0 —— 产品化分层重设计: 模型行无框/去进度条; 线路行小圆角卡片+左侧状态竖条; 窗口外边框+标题分隔线
+﻿param([switch]$Query,[switch]$Settings)
+# ALEN TokenMeter 额度条 v1.6.0 —— 设置接口: 手写新增服务商 API 接入(custom-providers.json), 额度条同步展示
 # 数据源: tokens\TOKENS.json (台账, 含 model_details) + FREE-LINES-status.json (探活) + TOKEN-STATUS.json (钥匙巡检)
 # 交互: 点线路行展开/收起模型; 按住拖动移动窗口; 右键菜单
 # 必须保存为 UTF-8 BOM; 启动: powershell -NoProfile -ExecutionPolicy Bypass -STA -WindowStyle Hidden -File TokenMeter.ps1
@@ -15,6 +15,8 @@ $TOKDIR  = if($env:TOKENS_DIR){ $env:TOKENS_DIR } else { 'D:\Backup\Documents\de
 $TOKJSON = Join-Path $TOKDIR 'TOKENS.json'
 $LINEJSON= Join-Path $TOKDIR 'FREE-LINES-status.json'
 $KEYJSON = Join-Path $TOKDIR 'TOKEN-STATUS.json'
+$CREDITJSON = Join-Path $TOKDIR 'baizhi-credits.json'
+$CUSTJSON= Join-Path $TOKDIR 'custom-providers.json'
 
 function Read-Utf8Json([string]$p){
   try{
@@ -22,6 +24,111 @@ function Read-Utf8Json([string]$p){
     $s  = $sr.ReadToEnd(); $sr.Close()
     return ($s | ConvertFrom-Json)
   }catch{ return $null }
+}
+
+# ===== 自定义服务商接入（手写）=====
+function Read-CustomProviders {
+  $o = Read-Utf8Json $CUSTJSON
+  if($o -and $o.providers){ return @($o.providers) }
+  return @()
+}
+
+function Write-CustomProviders($arr){
+  $json = @{ providers = @($arr) } | ConvertTo-Json -Depth 5
+  [IO.File]::WriteAllText($CUSTJSON, $json, (New-Object Text.UTF8Encoding($true)))
+}
+
+function Show-SettingsForm {
+  $script:cust = Read-CustomProviders
+  $sf = New-Object System.Windows.Forms.Form
+  $sf.Text='设置 · 自定义服务商接入'
+  $sf.FormBorderStyle='FixedDialog'; $sf.StartPosition='CenterScreen'
+  $sf.Size=New-Object Drawing.Size(570,470); $sf.TopMost=$true
+  $sf.BackColor=[Drawing.Color]::FromArgb(24,26,31)
+  $sf.Font=New-Object Drawing.Font('Microsoft YaHei UI',9)
+
+  $lb = New-Object System.Windows.Forms.ListBox
+  $lb.Location=New-Object Drawing.Point(12,12); $lb.Size=New-Object Drawing.Size(200,364)
+  $lb.BackColor=[Drawing.Color]::FromArgb(32,35,42); $lb.ForeColor=[Drawing.Color]::FromArgb(232,232,232)
+  $sf.Controls.Add($lb); $script:setLb=$lb; $script:setSf=$sf
+
+  $script:refreshList = {
+    $script:setLb.Items.Clear()
+    foreach($cp in @($script:cust)){ $script:setLb.Items.Add([string]$cp.name) }
+  }
+  & $script:refreshList
+
+  $labels = @('名称*','ID*','Base URL*','Key 环境变量','模型(逗号分隔)','备注')
+  $txts = @()
+  $x0=228; $y0=14; $step=46
+  for($i=0; $i -lt $labels.Count; $i++){
+    $l = New-Object System.Windows.Forms.Label
+    $l.Text=$labels[$i]; $l.Location=New-Object Drawing.Point($x0, ($y0 + $i*$step))
+    $l.Size=New-Object Drawing.Size(160,16); $l.ForeColor=[Drawing.Color]::FromArgb(154,160,168)
+    $sf.Controls.Add($l)
+    $t = New-Object System.Windows.Forms.TextBox
+    $t.Location=New-Object Drawing.Point($x0, ($y0 + $i*$step + 18))
+    $t.Size=New-Object Drawing.Size(310,24)
+    $t.BackColor=[Drawing.Color]::FromArgb(32,35,42); $t.ForeColor=[Drawing.Color]::FromArgb(232,232,232)
+    $sf.Controls.Add($t); $txts += $t
+  }
+  $script:setTxts=$txts
+
+  $lb.Add_SelectedIndexChanged({
+    param($s,$e)
+    if($script:setLb.SelectedIndex -lt 0){ return }
+    $cp = $script:cust[$script:setLb.SelectedIndex]
+    if(-not $cp){ return }
+    $t0=$script:setTxts
+    $t0[0].Text=[string]$cp.name; $t0[1].Text=[string]$cp.id
+    $t0[2].Text=[string]$cp.base_url; $t0[3].Text=[string]$cp.key_env
+    $t0[4].Text=(@($cp.models) -join ','); $t0[5].Text=[string]$cp.note
+  })
+
+  $btnSave = New-Object System.Windows.Forms.Button
+  $btnSave.Text='保存'; $btnSave.Location=New-Object Drawing.Point(228,388); $btnSave.Size=New-Object Drawing.Size(96,28)
+  $btnSave.BackColor=[Drawing.Color]::FromArgb(61,220,132); $btnSave.ForeColor=[Drawing.Color]::FromArgb(12,20,16); $btnSave.FlatStyle='Flat'
+  $btnSave.Add_Click({
+    $t0=$script:setTxts
+    $nm=$t0[0].Text.Trim(); $id=$t0[1].Text.Trim(); $bu=$t0[2].Text.Trim()
+    if($nm -eq '' -or $bu -eq ''){ [Windows.Forms.MessageBox]::Show('名称和 Base URL 必填','提示') | Out-Null; return }
+    if($id -eq ''){ $id='cust-' + (Get-Date -Format 'MMddHHmmss') }
+    $ms=@(); foreach($m in ($t0[4].Text -split ',')){ $mm=$m.Trim(); if($mm -ne ''){ $ms += $mm } }
+    $item=[pscustomobject]@{ name=$nm; id=$id; base_url=$bu; key_env=$t0[3].Text.Trim(); models=@($ms); note=$t0[5].Text.Trim(); added_at=[DateTimeOffset]::Now.ToString('o') }
+    $arr=@($script:cust)
+    $found=-1; for($j=0;$j -lt $arr.Count;$j++){ if([string]$arr[$j].id -eq $id){ $found=$j; break } }
+    if($found -ge 0){ $arr[$found]=$item } else { $arr += $item }
+    Write-CustomProviders $arr
+    $script:cust = Read-CustomProviders
+    & $script:refreshList
+    if($rebuild){ $rebuild.Start() }
+  })
+  $sf.Controls.Add($btnSave)
+
+  $btnDel = New-Object System.Windows.Forms.Button
+  $btnDel.Text='删除选中'; $btnDel.Location=New-Object Drawing.Point(332,388); $btnDel.Size=New-Object Drawing.Size(96,28)
+  $btnDel.BackColor=[Drawing.Color]::FromArgb(46,50,58); $btnDel.ForeColor=[Drawing.Color]::FromArgb(232,232,232); $btnDel.FlatStyle='Flat'
+  $btnDel.Add_Click({
+    if($script:setLb.SelectedIndex -lt 0){ return }
+    $arr=@($script:cust); $new=@()
+    for($j=0;$j -lt $arr.Count;$j++){ if($j -ne $script:setLb.SelectedIndex){ $new += $arr[$j] } }
+    Write-CustomProviders $new
+    $script:cust = Read-CustomProviders
+    & $script:refreshList
+    foreach($t in $script:setTxts){ $t.Text='' }
+    if($rebuild){ $rebuild.Start() }
+  })
+  $sf.Controls.Add($btnDel)
+
+  $btnClose = New-Object System.Windows.Forms.Button
+  $btnClose.Text='关闭'; $btnClose.Location=New-Object Drawing.Point(444,388); $btnClose.Size=New-Object Drawing.Size(96,28)
+  $btnClose.BackColor=[Drawing.Color]::FromArgb(46,50,58); $btnClose.ForeColor=[Drawing.Color]::FromArgb(232,232,232); $btnClose.FlatStyle='Flat'
+  $btnClose.Add_Click({ $script:setSf.Close() })
+  $sf.Controls.Add($btnClose)
+
+  $sf.Add_Shown({ $script:setTxts[0].Focus() })
+  $null = $sf.ShowDialog()
+  $sf.Dispose()
 }
 
 function Get-Recommended {
@@ -101,6 +208,11 @@ $shortNames = @{
 if($Query){
   $r=Get-Recommended
   if($r){ Write-Output ($r | ConvertTo-Json -Compress) } else { Write-Output '{"line":null,"provider":null,"models":[]}' }
+  exit 0
+}
+
+if($Settings){
+  Show-SettingsForm
   exit 0
 }
 
@@ -446,7 +558,9 @@ function Build-Rows{
       }
       elseif($t.id -eq 'baizhi'){
         $cr = $null
-        if($t.credits -and $null -ne $t.credits.remaining){ $cr = [double]$t.credits.remaining }
+        $co = Read-Utf8Json $CREDITJSON
+        if($co -and $null -ne $co.remaining){ $cr = [double]$co.remaining }
+        elseif($t.credits -and $null -ne $t.credits.remaining){ $cr = [double]$t.credits.remaining }
         if($cr -ne $null){ $right = '积分 ' + (Format-Num $cr) } else { $right = '积分计费' }
         $dot=$C.green; $fill=$C.green
         $tip += "`n积分余额只在控制台 baizhi.cloud/console/apps 可见（API key 查不到，需登录态）"
@@ -562,6 +676,45 @@ function Build-Rows{
     }
   }
 
+  # 自定义服务商接入（手写设置接口）
+  $cust = Read-CustomProviders
+  Write-Log ('DBG cust=' + @($cust).Count + ' n=' + $n + ' y=' + $y)
+  if($cust -and $cust.Count -gt 0){
+    foreach($cp in $cust){
+      try{
+        $cid = 'custom:' + [string]$cp.id
+        $cname = [string]$cp.name
+        $cright = '自定义接入'
+        $ctip = 'Base: ' + [string]$cp.base_url
+        $ck = ''
+        if($cp.key_env){ $ck = [string]$cp.key_env }
+        if($ck -ne ''){
+          $kv = [Environment]::GetEnvironmentVariable($ck)
+          if($kv){ $ctip += "`nKey 环境变量 $ck : 已设置" } else { $ctip += "`nKey 环境变量 $ck : 未设置"; $cright='缺key' }
+        }else{ $ctip += '`n未配置 Key 环境变量' }
+        $cdot=$C.green; $cfill=$C.green; $cfrac=0.6
+        if($cright -eq '缺key'){ $cdot=$C.orange; $cfill=$C.orange }
+        if($cp.note){ $ctip += "`n" + [string]$cp.note }
+        $mdl=@()
+        if($cp.models){ foreach($m in @($cp.models)){ $mdl += [pscustomobject]@{ name=[string]$m; tier='自定义'; usable=$true; quota=$null; note='' } } }
+        $cexp = [bool]$script:expanded[$cid]
+        $script:provIds += $cid
+        New-ProviderRow $cid $cname $cright $cfrac $cdot $cfill $ctip $y ($mdl.Count -gt 0) $cexp $C.rowBrd
+        $y += $ROWH + $GAP
+        if($cexp -and $mdl.Count -gt 0){
+          foreach($mm in $mdl){
+            New-ModelRow ([string]$mm.name) '—' 0.0 $C.gray $ctip $y $true $C.dim $C.mrowBrd
+            $y += $MODELH + 2
+          }
+        }
+        $n++
+        Write-Log ('DBG cp done id=' + $cid + ' n=' + $n + ' y=' + $y)
+      }catch{
+        Write-Log ('DBG cp ERROR id=' + [string]$cp.id + ' :: ' + $_.Exception.Message)
+      }
+    }
+  }
+
   $contentH = [Math]::Max(0, $y)
   $wa = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea
   $maxH = [Math]::Max(200, $wa.Height - 80)
@@ -579,9 +732,42 @@ $i1=$cm.Items.Add('立即刷新');        $i1.Add_Click({ [void](Build-Rows) })
 $i2=$cm.Items.Add('置顶 开/关');      $i2.Add_Click({ $f.TopMost = -not $f.TopMost })
 $i5=$cm.Items.Add('全部展开');        $i5.Add_Click({ foreach($id in $script:provIds){ $script:expanded[$id]=$true }; [void](Build-Rows) })
 $i6=$cm.Items.Add('全部收起');        $i6.Add_Click({ $script:expanded=@{}; [void](Build-Rows) })
+$i9=$cm.Items.Add('⚙ 设置（手写接入）…'); $i9.Add_Click({ Show-SettingsForm })
 $i3=$cm.Items.Add('打开台账目录');    $i3.Add_Click({ Start-Process explorer.exe $TOKDIR })
 $i7=$cm.Items.Add('复制推荐可用线路'); $i7.Add_Click({ try{ [Windows.Forms.Clipboard]::SetText((Get-Content (Join-Path $TOKDIR 'recommended-line.json') -Raw)) }catch{} })
 $i8=$cm.Items.Add('排序: 推荐序/自动'); $i8.Add_Click({ if($script:sortMode -eq 'auto'){ $script:sortMode='recommend' }else{ $script:sortMode='auto' }; [void](Build-Rows) })
+$i10=$cm.Items.Add('设置百智云积分…')
+$i10.Add_Click({
+  $df = New-Object System.Windows.Forms.Form
+  $df.Text='百智云积分'; $df.FormBorderStyle='FixedDialog'; $df.StartPosition='CenterScreen'
+  $df.Size=New-Object Drawing.Size(266,146); $df.TopMost=$true
+  $lb = New-Object System.Windows.Forms.Label
+  $lb.Text='当前积分'; $lb.AutoSize=$true; $lb.Location=New-Object Drawing.Point(16,22)
+  $nu = New-Object System.Windows.Forms.NumericUpDown
+  $nu.Minimum=0; $nu.Maximum=1000000; $nu.Location=New-Object Drawing.Point(96,18)
+  $nu.Size=New-Object Drawing.Size(130,24)
+  $cur = 0
+  $co = Read-Utf8Json $CREDITJSON
+  if($co -and $null -ne $co.remaining){ $cur = [int]$co.remaining }
+  elseif($tok -and $tok.tokens){
+    $bz = @($tok.tokens | Where-Object { $_.id -eq 'baizhi' })[0]
+    if($bz -and $bz.credits -and $null -ne $bz.credits.remaining){ $cur = [int]$bz.credits.remaining }
+  }
+  if($cur -ge 0 -and $cur -le 1000000){ $nu.Value = [decimal]$cur }
+  $ok = New-Object System.Windows.Forms.Button
+  $ok.Text='保存'; $ok.Size=New-Object Drawing.Size(72,28); $ok.Location=New-Object Drawing.Point(50,68)
+  $ok.Add_Click({
+    $obj = @{ remaining = [int]$nu.Value; checked_at = [DateTimeOffset]::Now.ToString('yyyy-MM-ddTHH:mm:sszzz'); source = '控件手动' }
+    [IO.File]::WriteAllText($CREDITJSON, ($obj | ConvertTo-Json), (New-Object Text.UTF8Encoding($false)))
+    $df.Close()
+    [void](Build-Rows)
+  })
+  $cn = New-Object System.Windows.Forms.Button
+  $cn.Text='取消'; $cn.Size=New-Object Drawing.Size(72,28); $cn.Location=New-Object Drawing.Point(140,68)
+  $cn.Add_Click({ $df.Close() })
+  $df.Controls.AddRange(@($lb,$nu,$ok,$cn))
+  [void]$df.ShowDialog()
+})
 $i4=$cm.Items.Add('退出');            $i4.Add_Click({ $f.Close() })
 $f.ContextMenuStrip = $cm
 $list.ContextMenuStrip = $cm
