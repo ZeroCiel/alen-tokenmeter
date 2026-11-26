@@ -1,4 +1,5 @@
-﻿# ALEN TokenMeter 额度条 v1.1.0 —— 线路可展开模型明细（剩余额度 / 免费 / 不启用）
+﻿param([switch]$Query)
+# ALEN TokenMeter 额度条 v1.5.0 —— 产品化分层重设计: 模型行无框/去进度条; 线路行小圆角卡片+左侧状态竖条; 窗口外边框+标题分隔线
 # 数据源: tokens\TOKENS.json (台账, 含 model_details) + FREE-LINES-status.json (探活) + TOKEN-STATUS.json (钥匙巡检)
 # 交互: 点线路行展开/收起模型; 按住拖动移动窗口; 右键菜单
 # 必须保存为 UTF-8 BOM; 启动: powershell -NoProfile -ExecutionPolicy Bypass -STA -WindowStyle Hidden -File TokenMeter.ps1
@@ -9,9 +10,6 @@ Add-Type -AssemblyName System.Drawing
 $base = Split-Path -Parent $MyInvocation.MyCommand.Path
 $log  = Join-Path $base 'tokenmeter.log'
 function Write-Log([string]$m){ try{ "$([DateTime]::Now.ToString('yyyy-MM-dd HH:mm:ss')) $m" | Out-File -FilePath $log -Append -Encoding UTF8 }catch{} }
-
-$mutex = New-Object System.Threading.Mutex($false, 'ALENTokenMeterMutex')
-if(-not $mutex.WaitOne(0, $false)){ Write-Log 'already running - exit'; exit }
 
 $TOKDIR  = if($env:TOKENS_DIR){ $env:TOKENS_DIR } else { 'D:\Backup\Documents\deepseek-harness\default-workspace\tokens' }
 $TOKJSON = Join-Path $TOKDIR 'TOKENS.json'
@@ -26,12 +24,89 @@ function Read-Utf8Json([string]$p){
   }catch{ return $null }
 }
 
+function Get-Recommended {
+  # 读三份数据, 返回当前可用且在推荐顺序中排第一的线路
+  $tok   = Read-Utf8Json $TOKJSON
+  $lines = Read-Utf8Json $LINEJSON
+  $keys  = Read-Utf8Json $KEYJSON
+  if(-not $lines){ return $null }
+  $keyMap=@{}
+  if($keys -and $keys.keys){ foreach($k in $keys.keys){ $keyMap[$k.name]=$k } }
+  $lineMap=@{}
+  if($lines.lines){ foreach($p in $lines.lines.PSObject.Properties){ $lineMap[$p.Name]=$p.Value } }
+  $order=@($lines.recommended_order)
+  if($order.Count -eq 0){ $order=@('zhipu','magpie','moma','qiniu','modelscope','amd') }
+  $active=@{}
+  if($tok -and $tok.tokens){
+    foreach($t in @($tok.tokens)){
+      if($t.status -like 'removed*'){ continue }
+      if($t.status -ne 'active'){ continue }
+      $active[[string]$t.id]=$true
+    }
+  }
+  $ocProv=@{}
+  try{
+    $oc=Read-Utf8Json 'C:\Users\Administrator\.config\opencode\opencode.json'
+    if($oc -and $oc.provider){
+      foreach($p in $oc.provider.PSObject.Properties){
+        $first=$null
+        if($p.Value.models){ foreach($m in $p.Value.models.PSObject.Properties){ $first=$m.Name; break } }
+        $ocProv[$p.Name]=$first
+      }
+    }
+  }catch{}
+  $provOf=@{ 'zhipu'='zhipu'; 'moma'='deepseek'; 'magpie'='magpie-zen'; 'amd'='free-amd'; 'modelscope'='modelscope'; 'qiniu'=$null }
+  $idsOf=@{ 'zhipu'=@('zhipu'); 'moma'=@('moma-deepseek'); 'magpie'=@('magpie-zen','opencode-zen-builtin'); 'amd'=@('free-amd'); 'modelscope'=@('modelscope'); 'qiniu'=@('qiniu-conatus') }
+  foreach($ln in $order){
+    $ok=$true
+    if($lineMap.ContainsKey($ln)){ $ok=[bool]$lineMap[$ln].ok }
+    $ids=@($idsOf[$ln])
+    if($ids.Count -gt 0){
+      $anyActive=$false
+      foreach($id in $ids){ if($active.ContainsKey($id)){ $anyActive=$true } }
+      if(-not $anyActive){ $ok=$false }
+      foreach($id in $ids){ if($keyMap.ContainsKey($id) -and ([string]$keyMap[$id].auth -eq '401' -or [string]$keyMap[$id].auth -eq '429' -or [string]$keyMap[$id].auth -eq 'removed')){ $ok=$false } }
+    }
+    if($ok){
+      $ocPid=$provOf[$ln]
+      $model=$null
+      if($ocPid -and $ocProv.ContainsKey($ocPid)){ $model=$ocProv[$ocPid] }
+      return [pscustomobject]@{ line=$ln; provider=$ocPid; models=@(if($model){$model}) }
+    }
+  }
+  return $null
+}
+
+function Write-Recommendation {
+  try{
+    $r=Get-Recommended
+    if($r){
+      $obj=[ordered]@{
+        at=[DateTime]::Now.ToString('yyyy-MM-dd HH:mm:ss')
+        line=$r.line; provider=$r.provider; models=@($r.models)
+        note='当前可用推荐线路(FREE-LINES-status.recommended_order 首个 ok)'
+      }
+      ($obj | ConvertTo-Json -Compress) | Out-File (Join-Path $TOKDIR 'recommended-line.json') -Encoding UTF8
+    }
+  }catch{ Write-Log ('recommendation write failed: ' + $_.Exception.Message) }
+}
+
 $shortNames = @{
   'moma-deepseek'='MoMA 移动云'; 'qiniu-conatus'='七牛活动'; 'free-amd'='AMD 云'; 'modelscope'='魔搭'
   'zhipu'='智谱'; 'magpie-zen'='Magpie Zen'; 'opencode-zen-builtin'='Zen 内置'; 'deepseek-official'='DS 官方'
   'groq'='Groq'; 'openai-gemini'='OAI/Gem'; 'scnet-maas'='SCNet按量'; 'scnet-tokenplan'='SCNet套餐'
   'gitcode-codingplan'='GitCode Lite'
 }
+
+if($Query){
+  $r=Get-Recommended
+  if($r){ Write-Output ($r | ConvertTo-Json -Compress) } else { Write-Output '{"line":null,"provider":null,"models":[]}' }
+  exit 0
+}
+
+$mutex = New-Object System.Threading.Mutex($false, 'ALENTokenMeterMutex')
+if(-not $mutex.WaitOne(0, $false)){ Write-Log 'already running - exit'; exit }
+
 $winStart = @{
   'moma-deepseek'   = [DateTimeOffset]'2026-11-24T00:00:00+08:00'
   'qiniu-conatus'   = [DateTimeOffset]'2026-10-24T00:00:00+08:00'
@@ -50,9 +125,11 @@ $C = @{
   orange= [Drawing.Color]::FromArgb(255,179,0)
   red   = [Drawing.Color]::FromArgb(255,82,82)
   gray  = [Drawing.Color]::FromArgb(107,112,120)
+  rowBrd= [Drawing.Color]::FromArgb(61,220,132)
+  mrowBrd=[Drawing.Color]::FromArgb(86,94,106)
 }
 
-$W=380; $HDR=40; $ROWH=32; $MODELH=24; $GAP=3
+$W=380; $HDR=40; $ROWH=32; $MODELH=24; $GAP=4
 $ROWX=8; $ROWW=$W-20
 
 $f = New-Object System.Windows.Forms.Form
@@ -60,6 +137,14 @@ $f.FormBorderStyle='None'; $f.BackColor=$C.bg
 $f.Size=New-Object Drawing.Size($W,240)
 $f.TopMost=$true; $f.ShowInTaskbar=$false; $f.StartPosition='Manual'; $f.Text='ALEN额度条'
 $f.Opacity=0.97
+# 窗口外框: 1px 深灰边框 + 标题区下方分隔线
+$f.Add_Paint({
+  param($s,$e)
+  $g = $e.Graphics
+  $p = New-Object Drawing.Pen([Drawing.Color]::FromArgb(42,47,56))
+  $g.DrawRectangle($p, 0, 0, ($s.Width-1), ($s.Height-1))
+  [void]$g.DrawLine($p, 0, ($HDR-1), ($s.Width-1), ($HDR-1))
+})
 
 $title = New-Object System.Windows.Forms.Label
 $title.Text='◆ ALEN 额度条'; $title.AutoSize=$false
@@ -95,6 +180,65 @@ $tipTip.AutoPopDelay=20000; $tipTip.InitialDelay=300
 $rebuild = New-Object System.Windows.Forms.Timer
 $rebuild.Interval = 20
 $rebuild.Add_Tick({ $rebuild.Stop(); [void](Build-Rows) })
+
+$script:skinMeta = @{}
+
+function Get-RoundRect([int]$x,[int]$y,[int]$w,[int]$h,[int]$rad){
+  if($w -lt 2){ $w=2 }; if($h -lt 2){ $h=2 }
+  if($rad -gt ([int]($w/2))){ $rad=[int]($w/2) }
+  if($rad -gt ([int]($h/2))){ $rad=[int]($h/2) }
+  if($rad -lt 1){ $rad=1 }
+  $d = $rad*2
+  $p = New-Object System.Drawing.Drawing2D.GraphicsPath
+  [void]$p.AddArc($x, $y, $d, $d, 180, 90)
+  [void]$p.AddArc(($x+$w-$d), $y, $d, $d, 270, 90)
+  [void]$p.AddArc(($x+$w-$d), ($y+$h-$d), $d, $d, 0, 90)
+  [void]$p.AddArc($x, ($y+$h-$d), $d, $d, 90, 90)
+  $p.CloseFigure()
+  return $p
+}
+
+# 游戏风胶囊进度条: 深色凹槽 + 分段刻度 + 亮色填充(两端半圆) + 顶部内高光 + 细描边
+function Draw-ProgressBar($g,[int]$x,[int]$y,[int]$w,[int]$h,[double]$frac,$fillC){
+  $rad = [int]($h/2)
+  $slot = Get-RoundRect $x $y $w $h $rad
+  $g.FillPath((New-Object Drawing.SolidBrush([Drawing.Color]::FromArgb(16,18,22))),$slot)
+  for($i=1; $i -lt 10; $i++){
+    $tx = $x + [int]($w*$i/10)
+    $g.DrawLine((New-Object Drawing.Pen([Drawing.Color]::FromArgb(58,64,74)),1), $tx, ($y+1), $tx, ($y+$h-1))
+  }
+  $g.DrawPath((New-Object Drawing.Pen([Drawing.Color]::FromArgb(70,76,86)),1),$slot)
+  $fw = [int][Math]::Max($h, [Math]::Min(1.0,$frac)*$w)
+  if($fw -ge $h){
+    $fp = Get-RoundRect $x $y $fw $h $rad
+    $g.FillPath((New-Object Drawing.SolidBrush($fillC)),$fp)
+    $hh = [int]($h/2)-1; if($hh -lt 1){ $hh=1 }
+    $hl = Get-RoundRect ($x+2) ($y+1) ($fw-4) $hh ([int]($hh/2))
+    $g.FillPath((New-Object Drawing.SolidBrush([Drawing.Color]::FromArgb(90,255,255,255))),$hl)
+    $g.DrawPath((New-Object Drawing.Pen([Drawing.Color]::FromArgb(30,0,0,0)),1),$fp)
+  }
+}
+
+# 产品化条目皮肤: 小圆角卡片(暗底+弱边界) + 左侧状态竖条 + 胶囊进度条
+function Set-RowSkin([System.Windows.Forms.Control]$ctl,[double]$frac,$fillC,[int]$bx,[int]$by,[int]$bw,[int]$bh,$stateC){
+  $ctl.BackColor=[Drawing.Color]::Transparent
+  if(-not $ctl.Name){ $ctl.Name = 'row' + [Guid]::NewGuid().ToString('N') }
+  $script:skinMeta[$ctl.Name]=[pscustomobject]@{frac=[double]$frac;fill=$fillC;bx=$bx;by=$by;bw=$bw;bh=$bh;state=$stateC}
+  $ctl.Add_Paint({
+    param($s,$e)
+    $m = $script:skinMeta[[string]$s.Name]
+    if($null -eq $m){ return }
+    $g = $e.Graphics
+    $g.SmoothingMode = [Drawing.Drawing2D.SmoothingMode]::AntiAlias
+    $body = Get-RoundRect 1 1 ($s.Width-3) ($s.Height-3) 6
+    $g.FillPath((New-Object Drawing.SolidBrush([Drawing.Color]::FromArgb(35,39,48))),$body)
+    $g.DrawPath((New-Object Drawing.Pen([Drawing.Color]::FromArgb(44,49,59)),1),$body)
+    $sbH = 12; $sbY = [int](($s.Height-$sbH)/2)
+    $sb = Get-RoundRect 3 $sbY 3 $sbH 2
+    $g.FillPath((New-Object Drawing.SolidBrush([Drawing.Color]$m.state)),$sb)
+    Draw-ProgressBar $g ([int]$m.bx) ([int]$m.by) ([int]$m.bw) ([int]$m.bh) ([double]$m.frac) ([Drawing.Color]$m.fill)
+  })
+}
 
 function Add-Mouse([System.Windows.Forms.Control]$ctl,[string]$providerId){
   $ctl.Tag = $providerId
@@ -134,10 +278,11 @@ function Format-Num([double]$n){
   return ([string][int]$n)
 }
 
-function New-ProviderRow([string]$id,[string]$name,[string]$right,[double]$frac,$dotC,$fillC,[string]$tip,[int]$y,[bool]$expandable,[bool]$expanded){
+function New-ProviderRow([string]$id,[string]$name,[string]$right,[double]$frac,$dotC,$fillC,[string]$tip,[int]$y,[bool]$expandable,[bool]$expanded,[Drawing.Color]$borderC){
   $rp = New-Object System.Windows.Forms.Panel
   $rp.Size=New-Object Drawing.Size($ROWW,$ROWH); $rp.Location=New-Object Drawing.Point($ROWX,$y)
-  $rp.BackColor=$C.row
+  $rp.Name = 'row-' + [string]$id
+  Set-RowSkin $rp $frac $fillC 132 12 110 8 $dotC
 
   $ind = New-Object System.Windows.Forms.Label
   $ind.Text = if($expandable){ if($expanded){'▾'}else{'▸'} } else {''}
@@ -155,14 +300,6 @@ function New-ProviderRow([string]$id,[string]$name,[string]$right,[double]$frac,
   $nm.Location=New-Object Drawing.Point(30,6); $nm.ForeColor=$C.txt
   $nm.Font=New-Object Drawing.Font('Microsoft YaHei UI',9); $nm.BackColor=[Drawing.Color]::Transparent
 
-  $track = New-Object System.Windows.Forms.Panel
-  $track.Size=New-Object Drawing.Size(110,8); $track.Location=New-Object Drawing.Point(132,12)
-  $track.BackColor=$C.track
-  $fillP = New-Object System.Windows.Forms.Panel
-  $fw = [int][Math]::Max(3, [Math]::Min(1.0,$frac)*110)
-  $fillP.Size=New-Object Drawing.Size($fw,8); $fillP.Location=New-Object Drawing.Point(0,0)
-  $fillP.BackColor=$fillC
-  $track.Controls.Add($fillP)
 
   $rl = New-Object System.Windows.Forms.Label
   $rl.Text=$right; $rl.AutoSize=$false; $rl.Size=New-Object Drawing.Size(106,20)
@@ -170,17 +307,18 @@ function New-ProviderRow([string]$id,[string]$name,[string]$right,[double]$frac,
   $rl.Font=New-Object Drawing.Font('Microsoft YaHei UI',8.25); $rl.TextAlign='MiddleRight'
   $rl.BackColor=[Drawing.Color]::Transparent
 
-  foreach($ctl in @($ind,$dotL,$nm,$track,$rl)){ $rp.Controls.Add($ctl) }
-  foreach($ctl in @($rp,$ind,$dotL,$nm,$track,$fillP,$rl)){ Add-Mouse $ctl $id }
+  foreach($ctl in @($ind,$dotL,$nm,$rl)){ $rp.Controls.Add($ctl) }
+  foreach($ctl in @($rp,$ind,$dotL,$nm,$rl)){ Add-Mouse $ctl $id }
   if($tip){ $tipTip.SetToolTip($rp,$tip); $tipTip.SetToolTip($nm,$tip) }
   $list.Controls.Add($rp)
   $script:rowCtl += $rp
 }
 
-function New-ModelRow([string]$name,[string]$right,[double]$frac,$fillC,[string]$tip,[int]$y,[bool]$usable,$rightColor){
+function New-ModelRow([string]$name,[string]$right,[double]$frac,$fillC,[string]$tip,[int]$y,[bool]$usable,$rightColor,[Drawing.Color]$borderC){
   $rw = $ROWW - 24
   $rp = New-Object System.Windows.Forms.Panel
   $rp.Size=New-Object Drawing.Size($rw,$MODELH); $rp.Location=New-Object Drawing.Point(($ROWX+24),$y)
+  $rp.Name = 'mdl-' + [Guid]::NewGuid().ToString('N')
   $rp.BackColor=$C.mrow
 
   $short = $name
@@ -194,14 +332,6 @@ function New-ModelRow([string]$name,[string]$right,[double]$frac,$fillC,[string]
   $nm.ForeColor = if($usable){ $C.txt } else { $C.gray }
   $nm.Font=New-Object Drawing.Font('Microsoft YaHei UI',8.25); $nm.BackColor=[Drawing.Color]::Transparent
 
-  $track = New-Object System.Windows.Forms.Panel
-  $track.Size=New-Object Drawing.Size(80,6); $track.Location=New-Object Drawing.Point(186,9)
-  $track.BackColor=$C.track
-  $fillP = New-Object System.Windows.Forms.Panel
-  $fw = [int][Math]::Max(2, [Math]::Min(1.0,$frac)*80)
-  $fillP.Size=New-Object Drawing.Size($fw,6); $fillP.Location=New-Object Drawing.Point(0,0)
-  $fillP.BackColor=$fillC
-  $track.Controls.Add($fillP)
 
   $rl = New-Object System.Windows.Forms.Label
   $rl.Text=$right; $rl.AutoSize=$false; $rl.Size=New-Object Drawing.Size(70,18)
@@ -210,11 +340,36 @@ function New-ModelRow([string]$name,[string]$right,[double]$frac,$fillC,[string]
   $rl.Font=New-Object Drawing.Font('Microsoft YaHei UI',8.25); $rl.TextAlign='MiddleRight'
   $rl.BackColor=[Drawing.Color]::Transparent
 
-  foreach($ctl in @($nm,$track,$rl)){ $rp.Controls.Add($ctl) }
-  foreach($ctl in @($rp,$nm,$track,$fillP,$rl)){ Add-Mouse $ctl '' }
+  foreach($ctl in @($nm,$rl)){ $rp.Controls.Add($ctl) }
+  foreach($ctl in @($rp,$nm,$rl)){ Add-Mouse $ctl '' }
   if($tip){ $tipTip.SetToolTip($rp,$tip); $tipTip.SetToolTip($nm,$tip) }
   $list.Controls.Add($rp)
   $script:rowCtl += $rp
+}
+
+$script:sortMode = 'recommend'
+$script:recLines = @()
+$lineKey = @{
+  'zhipu'='zhipu'; 'moma-deepseek'='moma'; 'magpie-zen'='magpie'; 'opencode-zen-builtin'='magpie'
+  'free-amd'='amd'; 'qiniu-conatus'='qiniu'; 'modelscope'='modelscope'
+}
+
+function Line-Ok([string]$id,$map){
+  $k=$lineKey[$id]; if(-not $k){ return $true }
+  if($map.ContainsKey($k)){ return [bool]$map[$k].ok }
+  return $true
+}
+
+function Line-Lat([string]$id,$map){
+  $k=$lineKey[$id]; if(-not $k){ return 999999 }
+  if($map.ContainsKey($k) -and $null -ne $map[$k].latency_ms){ return [double]$map[$k].latency_ms }
+  return 999999
+}
+
+function Line-Rank([string]$id,$rankMap){
+  $k=$lineKey[$id]; if(-not $k){ return 900 }
+  if($rankMap.ContainsKey($k)){ return [int]$rankMap[$k] }
+  return 900
 }
 
 function Build-Rows{
@@ -234,9 +389,22 @@ function Build-Rows{
   $now = [DateTimeOffset]::Now
   $n = 0
   if($tok -and $tok.tokens){
+    $items = @()
     foreach($t in $tok.tokens){
       if($t.id -eq 'scnet-token-plan'){ continue }
       if($t.status -like 'removed*'){ continue }
+      $items += $t
+    }
+    $rankMap = @{}
+    $ri = 0
+    if($lines.recommended_order){ foreach($ro in @($lines.recommended_order)){ if(-not $rankMap.ContainsKey([string]$ro)){ $rankMap[[string]$ro] = $ri; $ri++ } } }
+    if($script:sortMode -eq 'auto'){
+      $items = @($items | Sort-Object -Property @{Expression={ -(Line-Ok $_.id $lineMap) }} , @{Expression={ Line-Lat $_.id $lineMap }})
+    }else{
+      $items = @($items | Sort-Object -Property @{Expression={ Line-Rank $_.id $rankMap }})
+    }
+    $script:recLines = @()
+    foreach($t in $items){
       $nm = $shortNames[$t.id]; if(-not $nm){ $nm = $t.id }
       $tip = [string]$t.provider
       if($t.expiry_rule){ $tip += "`n" + $t.expiry_rule }
@@ -275,6 +443,13 @@ function Build-Rows{
         $ok = $true; if($lineMap.ContainsKey('amd') -and -not $lineMap['amd'].ok){ $ok=$false }
         if($ok){ $dot=$C.green; $fill=$C.green } else { $dot=$C.orange; $fill=$C.orange; $right='探活失败·'+$right }
         $tip += "`n每日 1 积分仅够最小探测, 编码活优先其他免费线"
+      }
+      elseif($t.id -eq 'baizhi'){
+        $cr = $null
+        if($t.credits -and $null -ne $t.credits.remaining){ $cr = [double]$t.credits.remaining }
+        if($cr -ne $null){ $right = '积分 ' + (Format-Num $cr) } else { $right = '积分计费' }
+        $dot=$C.green; $fill=$C.green
+        $tip += "`n积分余额只在控制台 baizhi.cloud/console/apps 可见（API key 查不到，需登录态）"
       }
       elseif($t.id -eq 'zhipu'){
         $right='免费档可用'; $dot=$C.green; $fill=$C.green
@@ -333,7 +508,8 @@ function Build-Rows{
       $exp = [bool]$script:expanded[$t.id]
       $script:provIds += $t.id
 
-      New-ProviderRow $t.id $nm $right $frac $dot $fill $tip $y ($mdl.Count -gt 0) $exp
+      $script:recLines += [pscustomobject]@{ id=[string]$t.id; line=[string]$lineKey[$t.id]; name=[string]$nm; ok=(($dot -eq $C.green) -and $authOk -and $provOk) }
+      New-ProviderRow $t.id $nm $right $frac $dot $fill $tip $y ($mdl.Count -gt 0) $exp $C.rowBrd
       $y += $ROWH + $GAP
 
       if($exp -and $mdl.Count -gt 0){
@@ -353,6 +529,9 @@ function Build-Rows{
             else{
               $mright='不启用'
             }
+          }
+          elseif($q -and [string]$q.unit -eq 'credits'){
+            $mright='积分'; $mfrac=1.0; $mfill=$C.green
           }
           elseif($q -and [string]$q.unit -eq 'free'){
             $mright='免费'; $mfrac=1.0; $mfill=$C.green
@@ -375,7 +554,7 @@ function Build-Rows{
             else { $mtip += "`n探活: $($m.probe.at) 失败 [$($m.probe.status)] $($m.probe.error)" }
           }
           if(-not $provOk){ $mtip += "`n线路状态: $($t.status)" }
-          New-ModelRow ([string]$m.name) $mright $mfrac $mfill $mtip $y $usable $mrc
+          New-ModelRow ([string]$m.name) $mright $mfrac $mfill $mtip $y $usable $mrc $C.mrowBrd
           $y += $MODELH + 2
         }
       }
@@ -391,6 +570,7 @@ function Build-Rows{
   $list.AutoScrollMinSize = New-Object Drawing.Size(0, ($contentH + 6))
   $f.Location = New-Object Drawing.Point(($wa.Right - $W - 8), ($wa.Bottom - $f.Height - 8))
   $sub.Text = ('{0} 条线 · {1}' -f $n, [DateTime]::Now.ToString('HH:mm'))
+  Write-Recommendation
   return $n
 }
 
@@ -400,6 +580,8 @@ $i2=$cm.Items.Add('置顶 开/关');      $i2.Add_Click({ $f.TopMost = -not $f.T
 $i5=$cm.Items.Add('全部展开');        $i5.Add_Click({ foreach($id in $script:provIds){ $script:expanded[$id]=$true }; [void](Build-Rows) })
 $i6=$cm.Items.Add('全部收起');        $i6.Add_Click({ $script:expanded=@{}; [void](Build-Rows) })
 $i3=$cm.Items.Add('打开台账目录');    $i3.Add_Click({ Start-Process explorer.exe $TOKDIR })
+$i7=$cm.Items.Add('复制推荐可用线路'); $i7.Add_Click({ try{ [Windows.Forms.Clipboard]::SetText((Get-Content (Join-Path $TOKDIR 'recommended-line.json') -Raw)) }catch{} })
+$i8=$cm.Items.Add('排序: 推荐序/自动'); $i8.Add_Click({ if($script:sortMode -eq 'auto'){ $script:sortMode='recommend' }else{ $script:sortMode='auto' }; [void](Build-Rows) })
 $i4=$cm.Items.Add('退出');            $i4.Add_Click({ $f.Close() })
 $f.ContextMenuStrip = $cm
 $list.ContextMenuStrip = $cm
