@@ -255,7 +255,8 @@ function Build-Rows{
           $right = ('余额 ¥{0}' -f $bal); $dot=$C.red; $fill=$C.red; $frac=0.04
           $tip += "`n充值 >= ¥0.04 原 key 即恢复 (GET /user/balance 200)"
         }else{
-          $right='可充值后用'; $dot=$C.green; $fill=$C.green
+          if($bal -ne $null -and $bal -gt 0){ $right = ('余额 ¥{0}' -f $bal) } else { $right='可充值后用' }
+          $dot=$C.green; $fill=$C.green
         }
       }
       elseif($t.id -eq 'groq' -or $t.id -eq 'openai-gemini'){
