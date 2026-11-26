@@ -236,6 +236,7 @@ function Build-Rows{
   if($tok -and $tok.tokens){
     foreach($t in $tok.tokens){
       if($t.id -eq 'scnet-token-plan'){ continue }
+      if($t.status -like 'removed*'){ continue }
       $nm = $shortNames[$t.id]; if(-not $nm){ $nm = $t.id }
       $tip = [string]$t.provider
       if($t.expiry_rule){ $tip += "`n" + $t.expiry_rule }
