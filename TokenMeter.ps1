@@ -1,5 +1,5 @@
 ﻿param([switch]$Query,[switch]$Settings)
-# ALEN TokenMeter 额度条 v1.6.0 —— 设置接口: 手写新增服务商 API 接入(custom-providers.json), 额度条同步展示
+# ALEN TokenMeter 额度条 v1.6.1 —— 设置接口: 手写新增服务商 API 接入(custom-providers.json), 额度条同步展示
 # 数据源: tokens\TOKENS.json (台账, 含 model_details) + FREE-LINES-status.json (探活) + TOKEN-STATUS.json (钥匙巡检)
 # 交互: 点线路行展开/收起模型; 按住拖动移动窗口; 右键菜单
 # 必须保存为 UTF-8 BOM; 启动: powershell -NoProfile -ExecutionPolicy Bypass -STA -WindowStyle Hidden -File TokenMeter.ps1
@@ -38,6 +38,40 @@ function Invoke-AutoSelect {
   }catch{
     Write-Log ('auto-select failed: ' + $_.Exception.Message)
   }
+}
+
+# ===== 百智云每日领积分（配合额度条的控件 + 每日自动）=====
+function Start-BaizhiDailyBackground {
+  $ps = Join-Path $base 'baizhi_daily.ps1'
+  if(-not (Test-Path $ps)){ return }
+  try{
+    Start-Process -FilePath 'powershell' -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-STA','-WindowStyle','Hidden','-File',$ps) -WindowStyle Hidden | Out-Null
+  }catch{}
+}
+function Invoke-BaizhiDaily([switch]$Force){
+  $ps = Join-Path $base 'baizhi_daily.ps1'
+  if(-not (Test-Path $ps)){ Write-Log 'baizhi_daily.ps1 missing'; return $false }
+  try{
+    $pargs = @('-NoProfile','-ExecutionPolicy','Bypass','-STA','-WindowStyle','Hidden','-File',$ps)
+    if($Force){ $pargs += '-Force' }
+    $out = & powershell @pargs 2>&1
+    $line = (($out | Out-String).Trim())
+    Write-Log ('baizhi daily -> ' + $line)
+    if($line -match 'captcha'){
+      try{ [Windows.Forms.MessageBox]::Show('百智云弹出验证码，已把浏览器切到前台，请手动完成。','ALEN 额度条') | Out-Null }catch{}
+    }
+    return ($line -match '^ok:')
+  }catch{
+    Write-Log ('baizhi daily failed: ' + $_.Exception.Message)
+    return $false
+  }
+}
+function Get-BaizhiDailyText {
+  $p = Join-Path $TOKDIR 'baizhi-daily-claim.json'
+  $st = Read-Utf8Json $p
+  if($st -and $st.date -eq (Get-Date -Format 'yyyy-MM-dd') -and $st.ok){ return '✓积分' }
+  if($st -and $st.date -eq (Get-Date -Format 'yyyy-MM-dd') -and $st.need_captcha){ return '待验证' }
+  return '领积分'
 }
 
 # ===== 自定义服务商接入（手写）=====
@@ -277,7 +311,7 @@ $f.Add_Paint({
 
 $title = New-Object System.Windows.Forms.Label
 $title.Text='◆ ALEN 额度条'; $title.AutoSize=$false
-$title.Size=New-Object Drawing.Size(160,24); $title.Location=New-Object Drawing.Point(12,9)
+$title.Size=New-Object Drawing.Size(112,24); $title.Location=New-Object Drawing.Point(12,9)
 $title.ForeColor=$C.txt; $title.Font=New-Object Drawing.Font('Microsoft YaHei UI',9.75,[Drawing.FontStyle]::Bold)
 $title.BackColor=[Drawing.Color]::Transparent
 $f.Controls.Add($title)
@@ -290,6 +324,22 @@ $sub.Location=New-Object Drawing.Point($subX,11)
 $sub.ForeColor=$C.dim; $sub.Font=New-Object Drawing.Font('Microsoft YaHei UI',8.25)
 $sub.TextAlign='MiddleRight'; $sub.BackColor=[Drawing.Color]::Transparent
 $f.Controls.Add($sub)
+
+# 百智每日领积分小控件（点一下领 100；状态每日自动刷新）
+$script:bzBtn = New-Object System.Windows.Forms.Button
+$script:bzBtn.Text = Get-BaizhiDailyText
+$script:bzBtn.Size = New-Object Drawing.Size(46,20)
+$script:bzBtn.Location = New-Object Drawing.Point(126,11)
+$script:bzBtn.FlatStyle = 'Flat'
+$script:bzBtn.BackColor = [Drawing.Color]::FromArgb(46,50,58)
+$script:bzBtn.ForeColor = [Drawing.Color]::FromArgb(255,182,72)
+$script:bzBtn.Font = New-Object Drawing.Font('Microsoft YaHei UI',8)
+$script:bzBtn.Add_Click({
+  [void](Invoke-BaizhiDaily -Force)
+  $script:bzBtn.Text = Get-BaizhiDailyText
+  [void](Build-Rows)
+})
+$f.Controls.Add($script:bzBtn)
 
 $list = New-Object System.Windows.Forms.Panel
 $list.Location=New-Object Drawing.Point(0,$HDR)
@@ -581,9 +631,13 @@ function Build-Rows{
         $co = Read-Utf8Json $CREDITJSON
         if($co -and $null -ne $co.remaining){ $cr = [double]$co.remaining }
         elseif($t.credits -and $null -ne $t.credits.remaining){ $cr = [double]$t.credits.remaining }
-        if($cr -ne $null){ $right = '积分 ' + (Format-Num $cr) } else { $right = '积分计费' }
         $dot=$C.green; $fill=$C.green
+        if($cr -ne $null){ $right = '积分 ' + (Format-Num $cr) } else { $right = '积分计费' }
+        $bs = Read-Utf8Json (Join-Path $TOKDIR 'baizhi-daily-claim.json')
+        if($bs -and $bs.date -eq (Get-Date -Format 'yyyy-MM-dd') -and $bs.ok){ $right += '·已领' }
+        else{ $right += '·待领'; $dot=$C.orange; $fill=$C.orange }
         $tip += "`n积分余额只在控制台 baizhi.cloud/console/apps 可见（API key 查不到，需登录态）"
+        $tip += "`n右键「百智每日领积分」或点标题栏小按钮领100积分（可能弹验证码）"
       }
       elseif($t.id -eq 'zhipu'){
         $right='免费档可用'; $dot=$C.green; $fill=$C.green
@@ -742,6 +796,10 @@ function Build-Rows{
   $list.AutoScrollMinSize = New-Object Drawing.Size(0, ($contentH + 6))
   $f.Location = New-Object Drawing.Point(($wa.Right - $W - 8), ($wa.Bottom - $f.Height - 8))
   $sub.Text = ('{0} 条线 · {1}' -f $n, [DateTime]::Now.ToString('HH:mm'))
+  if($script:bzBtn){
+    $script:bzBtn.Text = Get-BaizhiDailyText
+    $script:bzBtn.ForeColor = if($script:bzBtn.Text -eq '✓积分'){ $C.green }else{ $C.orange }
+  }
   try{
     $sl = Read-Utf8Json (Join-Path $TOKDIR 'selected-line.json')
     if($sl -and $sl.opencode_model){
@@ -794,6 +852,8 @@ $i10.Add_Click({
   $df.Controls.AddRange(@($lb,$nu,$ok,$cn))
   [void]$df.ShowDialog()
 })
+$iBz=$cm.Items.Add('百智每日领积分（点此立即领）')
+$iBz.Add_Click({ [void](Invoke-BaizhiDaily -Force); $script:bzBtn.Text = Get-BaizhiDailyText; [void](Build-Rows) })
 $script:curModel = '—'
 try{
   $sl = Read-Utf8Json (Join-Path $TOKDIR 'selected-line.json')
@@ -836,8 +896,14 @@ $timer.Start()
 
 $script:timer2 = New-Object System.Windows.Forms.Timer
 $script:timer2.Interval = 25000
-$script:timer2.Add_Tick({ $script:timer2.Stop(); [void](Build-Rows) })
+$script:timer2.Add_Tick({ $script:timer2.Stop(); Start-BaizhiDailyBackground; [void](Build-Rows) })
 $script:timer2.Start()
+
+# 每 30 分钟检查一次；脚本内部按日期去重，当天成功领过会直接跳过
+$script:bzTimer = New-Object System.Windows.Forms.Timer
+$script:bzTimer.Interval = 1800000
+$script:bzTimer.Add_Tick({ Start-BaizhiDailyBackground; [void](Build-Rows) })
+$script:bzTimer.Start()
 
 $rows = Build-Rows
 Write-Log ('shown rows=' + $rows)
