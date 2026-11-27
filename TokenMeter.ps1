@@ -26,11 +26,26 @@ function Read-Utf8Json([string]$p){
   }catch{ return $null }
 }
 
+# ===== 启动自动选线路（可用 + 高分档 + 低延迟，写 opencode/hermes/zcode）=====
+function Invoke-AutoSelect {
+  $py = Join-Path $base 'select_model.py'
+  if(-not (Test-Path $py)){ return }
+  $lk = Read-Utf8Json (Join-Path $TOKDIR 'model-lock.json')
+  if($lk -and $lk.locked){ Write-Log 'auto-select skipped (locked)'; return }
+  try{
+    Start-Process -FilePath 'python' -ArgumentList @($py, '--apply', '--quiet') -WindowStyle Hidden | Out-Null
+    Write-Log 'auto-select started (background)'
+  }catch{
+    Write-Log ('auto-select failed: ' + $_.Exception.Message)
+  }
+}
+
 # ===== 自定义服务商接入（手写）=====
 function Read-CustomProviders {
   $o = Read-Utf8Json $CUSTJSON
-  if($o -and $o.providers){ return @($o.providers) }
-  return @()
+  $arr = @()
+  if($o -and $o.providers){ $arr = @($o.providers) }
+  return ,$arr
 }
 
 function Write-CustomProviders($arr){
@@ -243,6 +258,8 @@ $C = @{
 
 $W=380; $HDR=40; $ROWH=32; $MODELH=24; $GAP=4
 $ROWX=8; $ROWW=$W-20
+
+Invoke-AutoSelect
 
 $f = New-Object System.Windows.Forms.Form
 $f.FormBorderStyle='None'; $f.BackColor=$C.bg
@@ -489,6 +506,8 @@ function Build-Rows{
   $script:rowCtl = @()
   $script:provIds = @()
 
+  $script:selLine = ''
+  try{ $sl0 = Read-Utf8Json (Join-Path $TOKDIR 'selected-line.json'); if($sl0 -and $sl0.line){ $script:selLine = [string]$sl0.line } }catch{}
   $tok   = Read-Utf8Json $TOKJSON
   $lines = Read-Utf8Json $LINEJSON
   $keys  = Read-Utf8Json $KEYJSON
@@ -621,6 +640,7 @@ function Build-Rows{
 
       $exp = [bool]$script:expanded[$t.id]
       $script:provIds += $t.id
+      if($script:selLine -and $t.id -eq $script:selLine){ $right = '当前 · ' + $right }
 
       $script:recLines += [pscustomobject]@{ id=[string]$t.id; line=[string]$lineKey[$t.id]; name=[string]$nm; ok=(($dot -eq $C.green) -and $authOk -and $provOk) }
       New-ProviderRow $t.id $nm $right $frac $dot $fill $tip $y ($mdl.Count -gt 0) $exp $C.rowBrd
@@ -678,7 +698,6 @@ function Build-Rows{
 
   # 自定义服务商接入（手写设置接口）
   $cust = Read-CustomProviders
-  Write-Log ('DBG cust=' + @($cust).Count + ' n=' + $n + ' y=' + $y)
   if($cust -and $cust.Count -gt 0){
     foreach($cp in $cust){
       try{
@@ -708,9 +727,8 @@ function Build-Rows{
           }
         }
         $n++
-        Write-Log ('DBG cp done id=' + $cid + ' n=' + $n + ' y=' + $y)
       }catch{
-        Write-Log ('DBG cp ERROR id=' + [string]$cp.id + ' :: ' + $_.Exception.Message)
+        Write-Log ('自定义接入渲染失败 id=' + [string]$cp.id + ' :: ' + $_.Exception.Message)
       }
     }
   }
@@ -723,6 +741,13 @@ function Build-Rows{
   $list.AutoScrollMinSize = New-Object Drawing.Size(0, ($contentH + 6))
   $f.Location = New-Object Drawing.Point(($wa.Right - $W - 8), ($wa.Bottom - $f.Height - 8))
   $sub.Text = ('{0} 条线 · {1}' -f $n, [DateTime]::Now.ToString('HH:mm'))
+  try{
+    $sl = Read-Utf8Json (Join-Path $TOKDIR 'selected-line.json')
+    if($sl -and $sl.opencode_model){
+      $script:curModel = $sl.opencode_model
+      if($script:i11){ $script:i11.Text = '当前线路: ' + $script:curModel }
+    }
+  }catch{}
   Write-Recommendation
   return $n
 }
@@ -768,6 +793,37 @@ $i10.Add_Click({
   $df.Controls.AddRange(@($lb,$nu,$ok,$cn))
   [void]$df.ShowDialog()
 })
+$script:curModel = '—'
+try{
+  $sl = Read-Utf8Json (Join-Path $TOKDIR 'selected-line.json')
+  if($sl -and $sl.opencode_model){ $script:curModel = $sl.opencode_model }
+}catch{}
+$script:i11=$cm.Items.Add(('当前线路: ' + $script:curModel))
+$script:i11.Add_Click({ try{ [Windows.Forms.Clipboard]::SetText($script:curModel) }catch{} })
+$i12=$cm.Items.Add('重新选择可用线路')
+$i12.Add_Click({
+  $lk = Read-Utf8Json (Join-Path $TOKDIR 'model-lock.json')
+  if($lk -and $lk.locked){ Write-Log 'reselect skipped (locked)'; return }
+  try{
+    $out = & python (Join-Path $base 'select_model.py') --apply --quiet 2>&1
+    Write-Log ('reselect -> ' + (($out | Out-String).Trim()))
+  }catch{ Write-Log ('reselect failed: ' + $_.Exception.Message) }
+  $sl = Read-Utf8Json (Join-Path $TOKDIR 'selected-line.json')
+  if($sl -and $sl.opencode_model){
+    $script:curModel = $sl.opencode_model
+    $script:i11.Text = '当前线路: ' + $script:curModel
+  }
+  [void](Build-Rows)
+})
+$i13=$cm.Items.Add('锁定/解锁自动切换')
+$i13.Add_Click({
+  $lp = Join-Path $TOKDIR 'model-lock.json'
+  $lk = Read-Utf8Json $lp
+  $new = -not [bool]($lk -and $lk.locked)
+  $obj = @{ locked = $new; at = [DateTimeOffset]::Now.ToString('yyyy-MM-ddTHH:mm:sszzz') }
+  [IO.File]::WriteAllText($lp, ($obj | ConvertTo-Json), (New-Object Text.UTF8Encoding($false)))
+  Write-Log ('auto-select lock=' + $new)
+})
 $i4=$cm.Items.Add('退出');            $i4.Add_Click({ $f.Close() })
 $f.ContextMenuStrip = $cm
 $list.ContextMenuStrip = $cm
@@ -776,6 +832,11 @@ $timer = New-Object System.Windows.Forms.Timer
 $timer.Interval = 120000
 $timer.Add_Tick({ [void](Build-Rows) })
 $timer.Start()
+
+$script:timer2 = New-Object System.Windows.Forms.Timer
+$script:timer2.Interval = 25000
+$script:timer2.Add_Tick({ $script:timer2.Stop(); [void](Build-Rows) })
+$script:timer2.Start()
 
 $rows = Build-Rows
 Write-Log ('shown rows=' + $rows)

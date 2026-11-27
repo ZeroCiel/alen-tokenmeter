@@ -21,6 +21,7 @@ Windows 桌面悬浮条：把各条免费/付费模型线路的**剩余额度、
 - **三种数据源合并**：台账（额度/到期）+ 线路巡检（探活）+ 钥匙巡检（401/余额）
 - **自动刷新**：默认 120 秒；右键「立即刷新」
 - **百智云积分可手动改**：右键「设置百智云积分…」→ 输入积分 → 保存；值写入 `tokens/baizhi-credits.json`，控件即时刷新（覆盖台账快照）
+- **自动选可用线路**：控件启动时后台按「可用 + 高分档 + 低延迟」挑一条线路，写 opencode / hermes / ZCode；当前线路行标「当前 ·」
 - **无边框可拖动**：左键按住任意位置拖动；右键菜单可置顶开关、打开台账目录、退出
 - **单实例**：互斥锁 `ALENTokenMeterMutex`，重复启动自动退出
 - **不占任务栏**：`ShowInTaskbar = false`，贴右下角工作区
@@ -186,6 +187,41 @@ python probe_models.py --timeout 120 # 慢线路（GitCode 冷启动 ~38s）
 **智谱上下文实测（2026-11-25 23:47）**：glm-4-flash 在 114k / 131k prompt tokens 下均 200，
 多轮 60k + 流式 + tools 也 200。客户端报「token expired or incorrect」不是智谱返回的（同 key 直连 200），
 应查客户端模型 id / key 注入。
+
+## 自动选可用线路（select_model.py）
+
+控件启动时在后台跑 `select_model.py --apply --quiet`，不阻塞界面；约 25 秒后自动刷新一次。
+
+**挑选规则**：候选必须线路 `status=active`、模型 `usable=true`、非 C 档（`model_policy.keep` 例外）；
+应用前再做一次**实时探活**（HTTP 200 才算可用，最多探前 8 个），并按 `S > A > B > C` → 有实测 → 延迟低 排序。
+DS 官方会先查 `/user/balance`，`is_available=false` 或余额 < ¥0.04 直接排除。
+
+**写入的 agent**：
+
+| agent | 写哪里 | 说明 |
+|---|---|---|
+| opencode | `~/.config/opencode/opencode.json` 的 `model` | 形如 `deepseek/deepseek-v4.1-flash` |
+| DSH 桌面端 | 同上 | 驱动同一份 opencode 配置 |
+| hermes | `%LOCALAPPDATA%\hermes\config.yaml` 的 `model.provider/default` | 仅限映射表里有的线路，否则跳过 |
+| ZCode | `~/.zcode/v2/provider_config.json` 的 `providerOrder` | ZCode 运行时不写（会被内存态覆盖） |
+
+**手动控制**（右键菜单）：
+
+- `当前线路: …` — 点击复制
+- `重新选择可用线路` — 立即重跑（同步，约 10–20 秒）
+- `锁定/解锁自动切换` — 写 `tokens/model-lock.json`；锁定时启动不再自动改配置
+
+```powershell
+python select_model.py --dry     # 只看会选谁
+python select_model.py --apply   # 实时探活并写入
+python select_model.py --apply --no-live   # 只用台账快照（快）
+```
+
+结果落在 `tokens/selected-line.json`（谁、何时、选了什么、各 agent 落地情况）。
+
+> 注意：opencode 自带「模型故障回退」，某条线路报错时会把全局 `model` 改回可用的旧线路
+> （会在同目录留下 `opencode.json.bak_fallback_*`）。控件的启动重选/手动重选就是用来纠偏的；
+> 若希望完全不让控件改，右键「锁定自动切换」。
 
 ## 文件
 
