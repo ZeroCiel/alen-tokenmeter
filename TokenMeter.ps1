@@ -1,5 +1,5 @@
 ﻿param([switch]$Query,[switch]$Settings)
-# ALEN TokenMeter 额度条 v1.6.1 —— 设置接口: 手写新增服务商 API 接入(custom-providers.json), 额度条同步展示
+# ALEN TokenMeter 额度条 v1.7.3 —— v1.7.2: 百智领积分按钮入百智云行; DS 官方行加「充值」入口(platform.deepseek.com/usage)
 # 数据源: tokens\TOKENS.json (台账, 含 model_details) + FREE-LINES-status.json (探活) + TOKEN-STATUS.json (钥匙巡检)
 # 交互: 点线路行展开/收起模型; 按住拖动移动窗口; 右键菜单
 # 必须保存为 UTF-8 BOM; 启动: powershell -NoProfile -ExecutionPolicy Bypass -STA -WindowStyle Hidden -File TokenMeter.ps1
@@ -325,21 +325,33 @@ $sub.ForeColor=$C.dim; $sub.Font=New-Object Drawing.Font('Microsoft YaHei UI',8.
 $sub.TextAlign='MiddleRight'; $sub.BackColor=[Drawing.Color]::Transparent
 $f.Controls.Add($sub)
 
-# 百智每日领积分小控件（点一下领 100；状态每日自动刷新）
+# 百智每日领积分小控件（v1.7.0: 从标题栏移到百智云行内, 仅当日未领时出现）
+$script:bzRowY = -1
+$script:bzDone = $false
 $script:bzBtn = New-Object System.Windows.Forms.Button
 $script:bzBtn.Text = Get-BaizhiDailyText
-$script:bzBtn.Size = New-Object Drawing.Size(46,20)
-$script:bzBtn.Location = New-Object Drawing.Point(126,11)
+$script:bzBtn.Size = New-Object Drawing.Size(36,20)
+$script:bzBtn.Visible = $false
 $script:bzBtn.FlatStyle = 'Flat'
 $script:bzBtn.BackColor = [Drawing.Color]::FromArgb(46,50,58)
 $script:bzBtn.ForeColor = [Drawing.Color]::FromArgb(255,182,72)
 $script:bzBtn.Font = New-Object Drawing.Font('Microsoft YaHei UI',8)
 $script:bzBtn.Add_Click({
   [void](Invoke-BaizhiDaily -Force)
-  $script:bzBtn.Text = Get-BaizhiDailyText
   [void](Build-Rows)
 })
-$f.Controls.Add($script:bzBtn)
+
+# DS 官方充值入口（固定挂在 DS 官方行右侧，点开 DeepSeek 用量/充值页）
+$script:dsRowY = -1
+$script:dsBtn = New-Object System.Windows.Forms.Button
+$script:dsBtn.Text = '充值'
+$script:dsBtn.Size = New-Object Drawing.Size(36,20)
+$script:dsBtn.Visible = $false
+$script:dsBtn.FlatStyle = 'Flat'
+$script:dsBtn.BackColor = [Drawing.Color]::FromArgb(46,50,58)
+$script:dsBtn.ForeColor = [Drawing.Color]::FromArgb(124,156,255)
+$script:dsBtn.Font = New-Object Drawing.Font('Microsoft YaHei UI',8)
+$script:dsBtn.Add_Click({ try{ Start-Process 'https://platform.deepseek.com/usage' }catch{} })
 
 $list = New-Object System.Windows.Forms.Panel
 $list.Location=New-Object Drawing.Point(0,$HDR)
@@ -555,6 +567,9 @@ function Build-Rows{
   foreach($r in $script:rowCtl){ try{ $r.Dispose() }catch{} }
   $script:rowCtl = @()
   $script:provIds = @()
+  $script:bzRowY = -1
+  $script:bzDone = $false
+  $script:dsRowY = -1
 
   $script:selLine = ''
   try{ $sl0 = Read-Utf8Json (Join-Path $TOKDIR 'selected-line.json'); if($sl0 -and $sl0.line){ $script:selLine = [string]$sl0.line } }catch{}
@@ -632,12 +647,12 @@ function Build-Rows{
         if($co -and $null -ne $co.remaining){ $cr = [double]$co.remaining }
         elseif($t.credits -and $null -ne $t.credits.remaining){ $cr = [double]$t.credits.remaining }
         $dot=$C.green; $fill=$C.green
-        if($cr -ne $null){ $right = '积分 ' + (Format-Num $cr) } else { $right = '积分计费' }
+        if($cr -ne $null){ $right = [string]([decimal]$cr) } else { $right = '积分计费' }
         $bs = Read-Utf8Json (Join-Path $TOKDIR 'baizhi-daily-claim.json')
-        if($bs -and $bs.date -eq (Get-Date -Format 'yyyy-MM-dd') -and $bs.ok){ $right += '·已领' }
-        else{ $right += '·待领'; $dot=$C.orange; $fill=$C.orange }
+        if($bs -and $bs.date -eq (Get-Date -Format 'yyyy-MM-dd') -and $bs.ok){ $right = '✓ ' + [string]([decimal]$cr); $script:bzDone=$true }
+        else{ $dot=$C.orange; $fill=$C.orange }
         $tip += "`n积分余额只在控制台 baizhi.cloud/console/apps 可见（API key 查不到，需登录态）"
-        $tip += "`n右键「百智每日领积分」或点标题栏小按钮领100积分（可能弹验证码）"
+        $tip += "`n行右侧橙色按钮可领100积分（可能弹验证码）; 右键菜单亦有入口"
       }
       elseif($t.id -eq 'zhipu'){
         $right='免费档可用'; $dot=$C.green; $fill=$C.green
@@ -699,6 +714,22 @@ function Build-Rows{
 
       $script:recLines += [pscustomobject]@{ id=[string]$t.id; line=[string]$lineKey[$t.id]; name=[string]$nm; ok=(($dot -eq $C.green) -and $authOk -and $provOk) }
       New-ProviderRow $t.id $nm $right $frac $dot $fill $tip $y ($mdl.Count -gt 0) $exp $C.rowBrd
+      if($t.id -eq 'baizhi'){
+        $script:bzRowY = $y
+        foreach($cl in $script:rowCtl[-1].Controls){
+          if($cl -is [System.Windows.Forms.Label] -and $cl.Width -ge 100 -and $cl.TextAlign -eq 'MiddleRight'){
+            $cl.Location = New-Object Drawing.Point(196,6); $cl.Size = New-Object Drawing.Size(124,20)
+          }
+        }
+      }
+      if($t.id -eq 'deepseek-official'){
+        $script:dsRowY = $y
+        foreach($cl in $script:rowCtl[-1].Controls){
+          if($cl -is [System.Windows.Forms.Label] -and $cl.Width -ge 100 -and $cl.TextAlign -eq 'MiddleRight'){
+            $cl.Location = New-Object Drawing.Point(196,6); $cl.Size = New-Object Drawing.Size(124,20)
+          }
+        }
+      }
       $y += $ROWH + $GAP
 
       if($exp -and $mdl.Count -gt 0){
@@ -797,8 +828,27 @@ function Build-Rows{
   $f.Location = New-Object Drawing.Point(($wa.Right - $W - 8), ($wa.Bottom - $f.Height - 8))
   $sub.Text = ('{0} 条线 · {1}' -f $n, [DateTime]::Now.ToString('HH:mm'))
   if($script:bzBtn){
-    $script:bzBtn.Text = Get-BaizhiDailyText
-    $script:bzBtn.ForeColor = if($script:bzBtn.Text -eq '✓积分'){ $C.green }else{ $C.orange }
+    $script:bzBtn.Text = if((Get-BaizhiDailyText) -eq '待验证'){ '验证' }else{ '领取' }
+    if(($script:bzRowY -ge 0) -and (-not $script:bzDone)){
+      $script:bzBtn.Location = New-Object Drawing.Point(($ROWX+$ROWW-42), ($script:bzRowY+6))
+      if($script:bzBtn.Parent -ne $list){ $list.Controls.Add($script:bzBtn) }
+      $script:bzBtn.Visible = $true
+      $script:bzBtn.BringToFront()
+      $tipTip.SetToolTip($script:bzBtn,'百智云每日领积分：点一下领 100（可能弹验证码）')
+    }else{
+      $script:bzBtn.Visible = $false
+    }
+  }
+  if($script:dsBtn){
+    if($script:dsRowY -ge 0){
+      $script:dsBtn.Location = New-Object Drawing.Point(($ROWX+$ROWW-42), ($script:dsRowY+6))
+      if($script:dsBtn.Parent -ne $list){ $list.Controls.Add($script:dsBtn) }
+      $script:dsBtn.Visible = $true
+      $script:dsBtn.BringToFront()
+      $tipTip.SetToolTip($script:dsBtn,'打开 DeepSeek 平台用量/充值页 platform.deepseek.com/usage')
+    }else{
+      $script:dsBtn.Visible = $false
+    }
   }
   try{
     $sl = Read-Utf8Json (Join-Path $TOKDIR 'selected-line.json')
@@ -853,7 +903,7 @@ $i10.Add_Click({
   [void]$df.ShowDialog()
 })
 $iBz=$cm.Items.Add('百智每日领积分（点此立即领）')
-$iBz.Add_Click({ [void](Invoke-BaizhiDaily -Force); $script:bzBtn.Text = Get-BaizhiDailyText; [void](Build-Rows) })
+$iBz.Add_Click({ [void](Invoke-BaizhiDaily -Force); [void](Build-Rows) })
 $script:curModel = '—'
 try{
   $sl = Read-Utf8Json (Join-Path $TOKDIR 'selected-line.json')
