@@ -22,6 +22,7 @@ Windows 桌面悬浮条：把各条免费/付费模型线路的**剩余额度、
 - **自动刷新**：默认 120 秒；右键「立即刷新」
 - **百智云每日领积分**：标题栏「✓积分 / 领积分」小按钮或右键「百智每日领积分」→ 复用已登录 Edge 窗口自动点「每日领积分 +100」；成功后写 `tokens/baizhi-credits.json` 与 `tokens/baizhi-daily-claim.json`。启动时和每 30 分钟后台检查一次，当天成功领过自动跳过；站点弹验证码时会把浏览器切到前台并提示人工完成
 - **自动选可用线路**：控件启动时后台按「可用 + 高分档 + 低延迟」挑一条线路，写 opencode / hermes / ZCode；当前线路行标「当前 ·」
+- **key 到期自动踢出候选**：台账 `expires_at` 过期的线路不再被自动选中（如 TokenRouter 免费 key 30 天）
 - **无边框可拖动**：左键按住任意位置拖动；右键菜单可置顶开关、打开台账目录、退出
 - **单实例**：互斥锁 `ALENTokenMeterMutex`，重复启动自动退出
 - **不占任务栏**：`ShowInTaskbar = false`，贴右下角工作区
@@ -110,6 +111,16 @@ $env:TOKENS_DIR = 'D:\my\tokens'
 - 自动领取：`baizhi_daily.ps1`（UIA 点按钮，不用 key/密码），状态在 `baizhi-daily-claim.json`；`ok=true` 才算当天领过，脚本会比对积分是否增加或页面是否出现「领取成功」
 - 验证码：点位型验证码无法可靠自动通过；脚本等待 15 秒后若仍在验证，会把浏览器切前台、写 `need_captcha=true`，控件显示「待验证」
   （格式 `{"remaining":100,"checked_at":"...","source":"..."}`）；该文件存在时优先于台账快照。
+
+### TokenRouter 免费线路（tokenrouter）
+
+- 2026-11-27 接入，模型 `deepseek/deepseek-v4.1-flash-1017-free`（**结尾必须带 `-free`**）
+- Base URL `https://api.tokenrouter.com/v1`，OpenAI 兼容；输入/输出标 0 价，免费算力有限
+- key 有效期 **30 天**：台账 `expires_at = 2026-12-27T00:00:00+08:00`
+- 控件显示「剩X天」，剩 2 天内转红；`select_model.py` 到期后直接把它踢出候选
+- 换 key：更新 `opencode.json#provider.tokenrouter.options.apiKey`、
+  `hermes config.yaml` 里 `api.tokenrouter.com` 那条 `api_key`、台账 `expires_at`
+- 同 key 还有 `nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free` 等免费模型
 
 根级 `model_policy` 记录分档规则与例外（例如 `keep: ["glm-4-flash"]`：C 档但保留可用）。
 

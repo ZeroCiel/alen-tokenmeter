@@ -11,3 +11,4 @@ __pycache__/
 
 # local version backups
 TokenMeter.ps1.v*bak
+TokenMeter.ps1.bak*

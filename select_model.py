@@ -54,6 +54,7 @@ OPENCODE_PROVIDER = {
     "opencode-zen-builtin": "opencode",
     "deepseek-official": "deepseek-official",
     "baizhi": "baizhi",
+    "tokenrouter": "tokenrouter",
 }
 
 # 台账线路 id -> zcode providerId（ZCode 内部命名不统一）
@@ -81,6 +82,8 @@ HERMES_MODEL = {
     ("free-amd", "GLM-5.3-Flash"): ("custom", "GLM-5.3-Flash"),
     ("free-amd", "DeepSeek-V4.1-Flash"): ("custom", "DeepSeek-V4.1-Flash"),
     ("free-amd", "Gemma-4-31B-IT"): ("custom", "Gemma-4-31B-IT"),
+    ("tokenrouter", "deepseek/deepseek-v4.1-flash-1017-free"):
+        ("custom", "deepseek/deepseek-v4.1-flash-1017-free"),
 }
 for _mid in (
     "deepseek-v4.1-flash-free", "big-pickle", "nemotron-3.5-super-vl-free",
@@ -276,6 +279,14 @@ def candidates():
                 try:
                     if float(credit["remaining"]) <= 0:
                         reasons.append("积分0")
+                except Exception:
+                    pass
+            exp = t.get("expires_at")
+            if exp:
+                try:
+                    now = datetime.datetime.now(datetime.timezone.utc).astimezone()
+                    if datetime.datetime.fromisoformat(str(exp)) < now:
+                        reasons.append("key已过期 " + str(exp)[:10])
                 except Exception:
                     pass
             if reasons:

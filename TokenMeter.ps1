@@ -897,7 +897,55 @@ $timer.Start()
 $script:timer2 = New-Object System.Windows.Forms.Timer
 $script:timer2.Interval = 25000
 $script:timer2.Add_Tick({ $script:timer2.Stop(); Start-BaizhiDailyBackground; [void](Build-Rows) })
+# key 到期提醒：任一线路 expires_at 在 7 天内（或已过期）时，每天弹一次
+function Show-ExpiryReminders {
+  try{
+    $st = Read-Utf8Json (Join-Path $TOKDIR 'expiry-reminder.json')
+    $today = [DateTime]::Now.ToString('yyyy-MM-dd')
+    if($st -and $st.last -eq $today){ return }
+    $tk = Read-Utf8Json $TOKJSON
+    if(-not $tk -or -not $tk.tokens){ return }
+    $now = [DateTimeOffset]::Now
+    $due = @()
+    foreach($x in $tk.tokens){
+      if(-not $x.expires_at){ continue }
+      if(-not ([string]$x.status).StartsWith('active')){ continue }
+      try{
+        $exp = [DateTimeOffset]::Parse([string]$x.expires_at, [Globalization.CultureInfo]::InvariantCulture)
+      }catch{ continue }
+      $days = ($exp - $now).TotalDays
+      if($days -le 7){
+        $nm = [string]$x.id
+        if($x.provider){ $nm = (([string]$x.provider -split '[ ,（(]')[0]) }
+        $d10 = ([string]$x.expires_at).Substring(0,10)
+        if($days -lt 0){ $due += ('{0}：key 已过期 ({1})' -f $nm, $d10) }
+        else{ $due += ('{0}：key 还有 {1} 天到期 ({2})' -f $nm, [int][Math]::Ceiling($days), $d10) }
+      }
+    }
+    if($due.Count -eq 0){ return }
+    [IO.File]::WriteAllText((Join-Path $TOKDIR 'expiry-reminder.json'),
+      (@{ last = $today; lines = $due } | ConvertTo-Json),
+      (New-Object Text.UTF8Encoding($false)))
+    Write-Log ('expiry-reminder: ' + ($due -join ' / '))
+    $msg = "以下 key 快到期了，请提前换新：`n`n" + ($due -join "`n") + "`n`n"
+    $msg += "要换的三处：`n"
+    $msg += "1. opencode.json  → 对应 provider 的 options.apiKey`n"
+    $msg += "2. hermes config.yaml → 对应 base_url 那条 api_key`n"
+    $msg += "3. tokens/TOKENS.json → 该线路的 expires_at（改成新 key 的 +30 天）"
+    $msg += "`n`n（当天只弹这一次；到期后 select_model.py 会自动把它踢出候选）"
+    [Windows.Forms.MessageBox]::Show($msg, 'ALEN 额度条 · key 到期提醒',
+      [Windows.Forms.MessageBoxButtons]::OK,
+      [Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
+  }catch{ Write-Log ('expiry-reminder failed: ' + $_.Exception.Message) }
+}
+
 $script:timer2.Start()
+$script:timer2.Add_Tick({ Show-ExpiryReminders })
+
+$script:expTimer = New-Object System.Windows.Forms.Timer
+$script:expTimer.Interval = 3600000
+$script:expTimer.Add_Tick({ Show-ExpiryReminders })
+$script:expTimer.Start()
 
 # 每 30 分钟检查一次；脚本内部按日期去重，当天成功领过会直接跳过
 $script:bzTimer = New-Object System.Windows.Forms.Timer
