@@ -187,7 +187,7 @@ function Get-Recommended {
       $anyActive=$false
       foreach($id in $ids){ if($active.ContainsKey($id)){ $anyActive=$true } }
       if(-not $anyActive){ $ok=$false }
-      foreach($id in $ids){ if($keyMap.ContainsKey($id) -and ([string]$keyMap[$id].auth -eq '401' -or [string]$keyMap[$id].auth -eq '429' -or [string]$keyMap[$id].auth -eq 'removed')){ $ok=$false } }
+      foreach($id in $ids){ if($keyMap.ContainsKey($id) -and ([string]$keyMap[$id].auth -eq '401' -or [string]$keyMap[$id].auth -eq '402' -or [string]$keyMap[$id].auth -eq '429' -or [string]$keyMap[$id].auth -eq 'removed')){ $ok=$false } }
     }
     if($ok){
       $ocPid=$provOf[$ln]
@@ -544,8 +544,9 @@ function Build-Rows{
 
       $dot=$C.gray; $fill=$C.gray; $frac=1.0; $right=''
 
-      $authOk = $true
-      if($keyMap.ContainsKey($t.id) -and $keyMap[$t.id].auth -eq '401'){ $authOk=$false }
+      $authCode = ''
+      if($keyMap.ContainsKey($t.id) -and $keyMap[$t.id].auth){ $authCode = [string]$keyMap[$t.id].auth }
+      $authOk = -not ($authCode -eq '401' -or $authCode -eq '402' -or $authCode -eq '403')
 
       if($t.id -eq 'deepseek-official'){
         $bal = $null
@@ -621,7 +622,7 @@ function Build-Rows{
           $right='探活失败'; $dot=$C.orange; $fill=$C.orange
         }
       }
-      if(-not $authOk){ $dot=$C.red; $fill=$C.red; $right='key 401' }
+      if(-not $authOk){ $dot=$C.red; $fill=$C.red; $right=('key ' + $authCode) }
 
       $mdl = @()
       if($t.model_details){ $mdl = @($t.model_details) }
