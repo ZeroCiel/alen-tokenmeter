@@ -1,5 +1,8 @@
 ﻿param([switch]$Query,[switch]$Settings)
-# ALEN TokenMeter 额度条 v1.7.3 —— v1.7.2: 百智领积分按钮入百智云行; DS 官方行加「充值」入口(platform.deepseek.com/usage)
+# ALEN TokenMeter 额度条 v1.8.1 —— 异常提醒小窗: 探活失败 + opencode 真实回话失败(chat_errors.py) 同窗提醒
+#                            提醒窗贴额度条上方(放不下就贴左侧), 不抢焦点; 确认即收起, 出现新异常再弹
+#                            v1.7.4: 长条按「警戒值」归一化(剩余/警戒值 满格, 低于警戒值缩红条)
+#                            v1.7.2: 百智领积分按钮入百智云行; DS 官方行加「充值」入口(platform.deepseek.com/usage)
 # 数据源: tokens\TOKENS.json (台账, 含 model_details) + FREE-LINES-status.json (探活) + TOKEN-STATUS.json (钥匙巡检)
 # 交互: 点线路行展开/收起模型; 按住拖动移动窗口; 右键菜单
 # 必须保存为 UTF-8 BOM; 启动: powershell -NoProfile -ExecutionPolicy Bypass -STA -WindowStyle Hidden -File TokenMeter.ps1
@@ -16,6 +19,15 @@ $TOKJSON = Join-Path $TOKDIR 'TOKENS.json'
 $LINEJSON= Join-Path $TOKDIR 'FREE-LINES-status.json'
 $KEYJSON = Join-Path $TOKDIR 'TOKEN-STATUS.json'
 $CREDITJSON = Join-Path $TOKDIR 'baizhi-credits.json'
+$WARNJSON = Join-Path $TOKDIR 'warn.json'
+# 警戒值表: 剩余低于该值即红条; 长条长度 = 剩余/警戒值 (>=1 满格)
+$script:warnMap = @{}
+try{
+  if(Test-Path $WARNJSON){
+    $wt = [IO.File]::ReadAllText($WARNJSON)
+    if($wt){ foreach($pp in (ConvertFrom-Json $wt).PSObject.Properties){ if($pp.Name -notlike '_*'){ try{ $script:warnMap[[string]$pp.Name] = [double]$pp.Value }catch{} } } }
+  }
+}catch{}
 $CUSTJSON= Join-Path $TOKDIR 'custom-providers.json'
 
 function Read-Utf8Json([string]$p){
@@ -207,12 +219,13 @@ function Get-Recommended {
       foreach($p in $oc.provider.PSObject.Properties){
         $first=$null
         if($p.Value.models){ foreach($m in $p.Value.models.PSObject.Properties){ $first=$m.Name; break } }
+        elseif($p.Value.whitelist){ $first=@($p.Value.whitelist)[0] }   # 内置 Zen 只有 whitelist, 没 models
         $ocProv[$p.Name]=$first
       }
     }
   }catch{}
-  $provOf=@{ 'zhipu'='zhipu'; 'moma'='deepseek'; 'magpie'='magpie-zen'; 'amd'='free-amd'; 'modelscope'='modelscope'; 'qiniu'=$null }
-  $idsOf=@{ 'zhipu'=@('zhipu'); 'moma'=@('moma-deepseek'); 'magpie'=@('magpie-zen','opencode-zen-builtin'); 'amd'=@('free-amd'); 'modelscope'=@('modelscope'); 'qiniu'=@('qiniu-conatus') }
+  $provOf=@{ 'zhipu'='zhipu'; 'moma'='deepseek'; 'magpie'='opencode'; 'amd'='free-amd'; 'modelscope'='modelscope'; 'qiniu'=$null }
+  $idsOf=@{ 'zhipu'=@('zhipu'); 'moma'=@('moma-deepseek'); 'magpie'=@('opencode-zen-builtin'); 'amd'=@('free-amd'); 'modelscope'=@('modelscope'); 'qiniu'=@('qiniu-conatus') }
   foreach($ln in $order){
     $ok=$true
     if($lineMap.ContainsKey($ln)){ $ok=[bool]$lineMap[$ln].ok }
@@ -251,7 +264,8 @@ $shortNames = @{
   'moma-deepseek'='MoMA 移动云'; 'qiniu-conatus'='七牛活动'; 'free-amd'='AMD 云'; 'modelscope'='魔搭'
   'zhipu'='智谱'; 'magpie-zen'='Magpie Zen'; 'opencode-zen-builtin'='Zen 内置'; 'deepseek-official'='DS 官方'
   'groq'='Groq'; 'openai-gemini'='OAI/Gem'; 'scnet-maas'='SCNet按量'; 'scnet-tokenplan'='SCNet套餐'
-  'gitcode-codingplan'='GitCode Lite'
+  'gitcode-codingplan'='GitCode Lite'; 'tokenrouter'='TokenRouter'; 'apinex'='APINEX'
+  'zcode-context'='ZCode 上下文'
 }
 
 if($Query){
@@ -374,6 +388,10 @@ $rebuild.Add_Tick({ $rebuild.Stop(); [void](Build-Rows) })
 
 $script:skinMeta = @{}
 
+# ===== 线路异常提醒小窗（AlertPanel.ps1，贴额度条上方，不抢焦点）=====
+. (Join-Path $base 'AlertPanel.ps1')
+Init-AlertPanel $f
+
 function Get-RoundRect([int]$x,[int]$y,[int]$w,[int]$h,[int]$rad){
   if($w -lt 2){ $w=2 }; if($h -lt 2){ $h=2 }
   if($rad -gt ([int]($w/2))){ $rad=[int]($w/2) }
@@ -473,7 +491,7 @@ function New-ProviderRow([string]$id,[string]$name,[string]$right,[double]$frac,
   $rp = New-Object System.Windows.Forms.Panel
   $rp.Size=New-Object Drawing.Size($ROWW,$ROWH); $rp.Location=New-Object Drawing.Point($ROWX,$y)
   $rp.Name = 'row-' + [string]$id
-  Set-RowSkin $rp $frac $fillC 132 12 110 8 $dotC
+  Set-RowSkin $rp $frac $fillC 132 12 56 8 $dotC   # 进度条缩短到 132~188, 给右侧详情栏让位
 
   $ind = New-Object System.Windows.Forms.Label
   $ind.Text = if($expandable){ if($expanded){'▾'}else{'▸'} } else {''}
@@ -493,8 +511,8 @@ function New-ProviderRow([string]$id,[string]$name,[string]$right,[double]$frac,
 
 
   $rl = New-Object System.Windows.Forms.Label
-  $rl.Text=$right; $rl.AutoSize=$false; $rl.Size=New-Object Drawing.Size(106,20)
-  $rl.Location=New-Object Drawing.Point(246,6); $rl.ForeColor=$C.dim
+  $rl.Text=$right; $rl.AutoSize=$false; $rl.Size=New-Object Drawing.Size(158,20)   # 加宽: 详情叠加后不截断
+  $rl.Location=New-Object Drawing.Point(194,6); $rl.ForeColor=$C.dim               # 左移, 右缘仍 352
   $rl.Font=New-Object Drawing.Font('Microsoft YaHei UI',8.25); $rl.TextAlign='MiddleRight'
   $rl.BackColor=[Drawing.Color]::Transparent
 
@@ -541,29 +559,100 @@ function New-ModelRow([string]$name,[string]$right,[double]$frac,$fillC,[string]
 $script:sortMode = 'recommend'
 $script:recLines = @()
 $lineKey = @{
-  'zhipu'='zhipu'; 'moma-deepseek'='moma'; 'magpie-zen'='magpie'; 'opencode-zen-builtin'='magpie'
+  'zhipu'='zhipu'; 'moma-deepseek'='moma'; 'magpie-zen'='magpie'
   'free-amd'='amd'; 'qiniu-conatus'='qiniu'; 'modelscope'='modelscope'
+  'apinex'='apinex'; 'tokenrouter'='tokenrouter'; 'scnet-tokenplan'='scnet-tokenplan'
+}
+
+# ZCode 会话上下文容量（把 ZCode 界面的「上下文容量」合并进额度条）
+# 数据源: ~/.zcode/cli/rollout/model-io-*.jsonl（每次模型调用一行, 取最近一次完整记录的 usage）
+function Update-ZCodeContext {
+  $out = Join-Path $TOKDIR 'zcode-context.json'
+  try {
+    $rc = Join-Path $env:USERPROFILE '.zcode\cli\rollout'
+    if(-not (Test-Path $rc)){ return }
+    $f = Get-ChildItem -Path $rc -Filter 'model-io-*.jsonl' -File | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    if(-not $f){ return }
+    # 源文件没更新就不重复解析（每次 Build-Rows 都会调用本函数）
+    if((Test-Path $out) -and $f.LastWriteTime -le (Get-Item $out).LastWriteTime){ return }
+    # 只读文件尾部 8MB（单行可达上百 KB，无需整读）
+    $fs = [System.IO.File]::OpenRead($f.FullName)
+    try {
+      $fs.Seek([Math]::Max(0, $fs.Length - 8MB), 'Begin') | Out-Null
+      $ms = New-Object System.IO.MemoryStream
+      $buf = New-Object byte[] 65536
+      while(($r = $fs.Read($buf,0,$buf.Length)) -gt 0){ $ms.Write($buf,0,$r) }
+      $text = [System.Text.Encoding]::UTF8.GetString($ms.ToArray())
+    } finally { $fs.Dispose() }
+    $lines = $text -split "`n"
+    $entry = $null
+    $lo = [Math]::Max(0, $lines.Count - 8)
+    for($i=$lines.Count-1; $i -ge $lo; $i--){
+      $ln = ([string]$lines[$i]).Trim()
+      if($ln.Length -lt 20){ continue }
+      try{
+        $j = $ln | ConvertFrom-Json
+        if($j.response -and $j.response.usage){ $entry = $j; break }
+      }catch{}
+    }
+    if(-not $entry){ return }
+    $u = $entry.response.usage
+    $win = 1000000   # 当前免费池/常用模型上下文容量均为 1M；如有不同容量的模型在此加映射
+    $obj = [pscustomobject]@{
+      used     = [int64]$u.inputTokens
+      cache    = [int64]$u.cacheReadTokens
+      output   = [int64]$u.outputTokens
+      model    = "$($entry.model.providerId)/$($entry.model.modelId)"
+      window   = [int64]$win
+      msgCount = [int]$entry.request.messageCount
+      at       = [string]$entry.completedAt
+      file     = [string]$f.Name
+    }
+    [System.IO.File]::WriteAllText($out, ($obj | ConvertTo-Json -Depth 3), (New-Object System.Text.UTF8Encoding $false))
+  } catch { Write-Log ("zcode-context 刷新失败: " + $_.Exception.Message) }
 }
 
 function Line-Ok([string]$id,$map){
+  if($id -eq 'zcode-context'){ return $true }   # 监控行置顶, 不参与探活排序
   $k=$lineKey[$id]; if(-not $k){ return $true }
   if($map.ContainsKey($k)){ return [bool]$map[$k].ok }
   return $true
 }
 
 function Line-Lat([string]$id,$map){
+  if($id -eq 'zcode-context'){ return 0 }
   $k=$lineKey[$id]; if(-not $k){ return 999999 }
   if($map.ContainsKey($k) -and $null -ne $map[$k].latency_ms){ return [double]$map[$k].latency_ms }
   return 999999
 }
 
 function Line-Rank([string]$id,$rankMap){
+  if($id -eq 'zcode-context'){ return -1 }   # 推荐序模式下也置顶
   $k=$lineKey[$id]; if(-not $k){ return 900 }
   if($rankMap.ContainsKey($k)){ return [int]$rankMap[$k] }
   return 900
 }
 
+# 线路行右侧追加「探活延迟 + 模型数」详情（各分支都在天数/额度之后调用）
+function Add-LineDetail([string]$id,[string]$right,[int]$modelCount,$map){
+  if($id -eq 'zcode-context'){ return $right }
+  $seg = @()
+  $k=$lineKey[$id]
+  if($k -and $map -and $map.ContainsKey($k)){
+    $ln=$map[$k]
+    if([bool]$ln.ok){
+      if($null -ne $ln.latency_ms){ $seg += ('{0}ms' -f [int]$ln.latency_ms) } else { $seg += '通' }
+    } else {
+      $seg += '断'
+    }
+  }
+  if($modelCount -gt 0 -and $id -ne 'opencode-zen-builtin'){ $seg += ('{0}型' -f $modelCount) }
+  if($seg.Count -gt 0){ return ($right + '·' + ($seg -join '/')) }
+  return $right
+}
+
 function Build-Rows{
+  [void](Update-ZCodeContext)   # 每次重建前刷新 ZCode 上下文数据（源文件未变则秒过）
   foreach($r in $script:rowCtl){ try{ $r.Dispose() }catch{} }
   $script:rowCtl = @()
   $script:provIds = @()
@@ -608,6 +697,15 @@ function Build-Rows{
       if($t.verified_at){ $tip += "`n实测: " + $t.verified_at }
 
       $dot=$C.gray; $fill=$C.gray; $frac=1.0; $right=''
+      # 本行用于「警戒值归一化」的指标值(天/元/积分)与默认警戒值
+      $metric=$null; $warnDef=$null; $warnLock=$false
+      # 模型明细 + 探活汇总(提前算): 全部探活失败时不再冒充「长期免费」
+      $mdl = @()
+      if($t.model_details){ $mdl = @($t.model_details) }
+      elseif($t.models){ foreach($m in @($t.models)){ $mdl += [pscustomobject]@{ name=[string]$m; tier='?'; usable=$true; quota=$null; note='' } } }
+      $probeAll = @($mdl | Where-Object { $_.probe -and $_.probe.at })
+      $probeOkCnt = @($probeAll | Where-Object { $_.probe.ok }).Count
+      $allProbeRed = ($probeAll.Count -gt 0 -and $probeOkCnt -eq 0)
 
       $authCode = ''
       if($keyMap.ContainsKey($t.id) -and $keyMap[$t.id].auth){ $authCode = [string]$keyMap[$t.id].auth }
@@ -616,6 +714,7 @@ function Build-Rows{
       if($t.id -eq 'deepseek-official'){
         $bal = $null
         if($keyMap.ContainsKey('deepseek-official') -and $keyMap['deepseek-official'].balance -match '(-?[\d.]+)'){ $bal=[double]$Matches[1] }
+        $metric=$bal; $warnDef=5
         if($bal -ne $null -and $bal -lt 0){
           $right = ('余额 ¥{0}' -f $bal); $dot=$C.red; $fill=$C.red; $frac=0.04
           $tip += "`n充值 >= ¥0.04 原 key 即恢复 (GET /user/balance 200)"
@@ -632,10 +731,15 @@ function Build-Rows{
         $right='待建通用key'; $dot=$C.orange; $fill=$C.orange; $frac=0.5
         $tip += "`n控制台-模型API-API Key管理 创建 sk- 通用 key (AK/SK 不是模型 key)"
       }
+      elseif($t.id -eq 'apinex'){
+        $right='需充值解锁'; $dot=$C.gray; $fill=$C.gray; $frac=0.3
+        $tip += "`n402: 单次充值 >= $5 解锁每日2500万 free tokens(永久); 未充值前不可用"
+      }
       elseif($t.id -eq 'free-amd'){
         $tomorrow = [DateTime]::Today.AddDays(1)
         $remH = ($tomorrow - [DateTime]::Now).TotalHours
         $frac = [Math]::Max(0.03, [Math]::Min(1.0, $remH/24))
+        $metric = $remH/24.0; $warnDef = 0.25
         $right = ('{0}h 后重置' -f [int]$remH)
         $ok = $true; if($lineMap.ContainsKey('amd') -and -not $lineMap['amd'].ok){ $ok=$false }
         if($ok){ $dot=$C.green; $fill=$C.green } else { $dot=$C.orange; $fill=$C.orange; $right='探活失败·'+$right }
@@ -646,17 +750,40 @@ function Build-Rows{
         $co = Read-Utf8Json $CREDITJSON
         if($co -and $null -ne $co.remaining){ $cr = [double]$co.remaining }
         elseif($t.credits -and $null -ne $t.credits.remaining){ $cr = [double]$t.credits.remaining }
+        $metric=$cr; $warnDef=50
         $dot=$C.green; $fill=$C.green
         if($cr -ne $null){ $right = [string]([decimal]$cr) } else { $right = '积分计费' }
         $bs = Read-Utf8Json (Join-Path $TOKDIR 'baizhi-daily-claim.json')
         if($bs -and $bs.date -eq (Get-Date -Format 'yyyy-MM-dd') -and $bs.ok){ $right = '✓ ' + [string]([decimal]$cr); $script:bzDone=$true }
-        else{ $dot=$C.orange; $fill=$C.orange }
+        else{ $dot=$C.orange; $fill=$C.orange; $warnLock=$true }   # 未领积分保持橙色, 不被警戒值改绿
         $tip += "`n积分余额只在控制台 baizhi.cloud/console/apps 可见（API key 查不到，需登录态）"
         $tip += "`n行右侧橙色按钮可领100积分（可能弹验证码）; 右键菜单亦有入口"
       }
       elseif($t.id -eq 'zhipu'){
         $right='免费档可用'; $dot=$C.green; $fill=$C.green
         $tip += "`n付费模型 4.5-air/4.6v 资源包已用完(429/1113); 按次包剩 18/99, 12-20 到期"
+      }
+      elseif($t.id -eq 'zcode-context'){
+        # ZCode 会话上下文容量（数据由 Update-ZCodeContext 从 rollout 解析）
+        $zc = Read-Utf8Json (Join-Path $TOKDIR 'zcode-context.json')
+        if($zc -and $zc.used){
+          $used=[double]$zc.used; $win=[double]$zc.window
+          if($win -le 0){ $win=1 }
+          $frac=[Math]::Max(0.02,[Math]::Min(1.0,$used/$win))
+          $cacheRate=0
+          if($used -gt 0 -and $zc.cache){ $cacheRate=[int][Math]::Round(100.0*([double]$zc.cache)/$used) }
+          $fk = { param($n) if($n -ge 1000000){ '{0:N1}M' -f ($n/1000000.0) } elseif($n -ge 1000){ '{0:N0}K' -f ($n/1000.0) } else { [string][int64]$n } }
+          $right = ('{0}/{1} · 缓存 {2}%' -f (& $fk $used), (& $fk $win), $cacheRate)
+          if($frac -lt 0.5){ $dot=$C.green; $fill=$C.green }
+          elseif($frac -lt 0.8){ $dot=$C.orange; $fill=$C.orange }
+          else{ $dot=$C.red; $fill=$C.red }
+          $tip += "`n模型 $($zc.model) · 消息 $($zc.msgCount) 条"
+          $tip += "`n输入 $($zc.used) · 缓存读 $($zc.cache) · 输出 $($zc.output)（最近一次调用）"
+          $tip += "`n来源 ~/.zcode/cli/rollout/$($zc.file) · 随额度条自动刷新"
+        } else {
+          $right='等待模型调用'; $dot=$C.gray; $fill=$C.gray; $frac=0.05
+          $tip += "`nZCode 产生模型调用后自动显示（rollout/model-io-*.jsonl）"
+        }
       }
       elseif($t.expires_at){
         $exp = [DateTimeOffset]::Parse($t.expires_at, [Globalization.CultureInfo]::InvariantCulture)
@@ -669,6 +796,7 @@ function Build-Rows{
           $tot = ($exp - $st).TotalSeconds
           if($tot -le 0){ $tot = 1 }
           $frac = [Math]::Max(0.03, [Math]::Min(1.0, $rem.TotalSeconds/$tot))
+          $metric = $rem.TotalDays; $warnDef = 3
           $d = [int][Math]::Floor($rem.TotalDays); $h = $rem.Hours
           if($d -ge 1){ $right = ('剩{0}天{1}h' -f $d,$h) } else { $right = ('剩{0}h{1}m' -f $h,$rem.Minutes) }
           if($rem.TotalDays -lt 2 -or $frac -le 0.12){ $dot=$C.red; $fill=$C.red }
@@ -684,21 +812,49 @@ function Build-Rows{
         }
       }
       else{
-        $right='长期免费'; $dot=$C.green; $fill=$C.green
-        $lkN = $t.id
-        if($t.id -eq 'opencode-zen-builtin'){ $lkN='magpie' }
-        if($lineMap.ContainsKey($lkN) -and -not $lineMap[$lkN].ok){
-          $right='探活失败'; $dot=$C.orange; $fill=$C.orange
+        if($allProbeRed){
+          # 检查全红: 台账/网页写着长期免费, 但所有模型实测均失败 -> 不冒充可用, 灰显「不可用」
+          $right='不可用'; $dot=$C.gray; $fill=$C.gray; $frac=0.04
+          $tip += ("`n网页/台账标注「长期免费」, 但 {0} 个模型实测全部失败(全红) -> 按「不可用」显示" -f $probeAll.Count)
+        }
+        elseif($t.id -eq 'opencode-zen-builtin'){
+          # 官方入口通道: 只能用 `opencode run` 探活(HTTP 带 key 必 429), 结果写在台账 probe 里
+          # 不再借用 magpie 网关的状态——那是另一条结构性走不通的转发线
+          $zd  = @($t.model_details)
+          $zpr = @($zd | ForEach-Object { $_.probe } | Where-Object { $_ })
+          if($zpr.Count -gt 0){
+            $zok = @($zpr | Where-Object { $_.ok }).Count
+            $right = ('{0}/{1} 可用' -f $zok, $zd.Count)
+            if($zok -eq 0){ $dot=$C.red; $fill=$C.red }
+            elseif($zok -lt $zd.Count){ $dot=$C.orange; $fill=$C.orange }
+          }
+        }
+        else{
+          $lkN = $t.id
+          if($lineMap.ContainsKey($lkN) -and -not $lineMap[$lkN].ok){
+            $right='探活失败'; $dot=$C.orange; $fill=$C.orange
+          }
+        }
+      }
+      # 全部分支统一补详情: 天数/额度 之后仍保留探活延迟与模型数
+      $right = Add-LineDetail $t.id $right ($mdl.Count) $lineMap
+      # 按警戒值归一化长条: 剩余/警戒值 满格; 低于警戒值 -> 按比例缩短并变红
+      if($null -ne $metric -and $null -ne $warnDef){
+        $wv = if($script:warnMap.ContainsKey([string]$t.id)){ [double]$script:warnMap[[string]$t.id] } else { [double]$warnDef }
+        if($wv -gt 0){
+          $mv = [double]$metric
+          $frac = [Math]::Max(0.02, [Math]::Min(1.0, $mv/$wv))
+          if(-not $warnLock){
+            if($mv -ge $wv){ $dot=$C.green; $fill=$C.green } else { $dot=$C.red; $fill=$C.red }
+          }
+          $tip += ("`n警戒值 {0}（剩余低于它会变红条）" -f $wv)
         }
       }
       if(-not $authOk){ $dot=$C.red; $fill=$C.red; $right=('key ' + $authCode) }
 
-      $mdl = @()
-      if($t.model_details){ $mdl = @($t.model_details) }
-      elseif($t.models){ foreach($m in @($t.models)){ $mdl += [pscustomobject]@{ name=[string]$m; tier='?'; usable=$true; quota=$null; note='' } } }
-
       $provOk = ($t.status -eq 'active')
-      if($provOk -and $mdl.Count -gt 0){
+      # allProbeRed 时不在这里改红: 行按用户要求灰显「不可用」, 模型行才全红
+      if($provOk -and $mdl.Count -gt 0 -and -not $allProbeRed){
         $anyOk = $false
         foreach($m in $mdl){
           $u = $true
@@ -710,7 +866,7 @@ function Build-Rows{
 
       $exp = [bool]$script:expanded[$t.id]
       $script:provIds += $t.id
-      if($script:selLine -and $t.id -eq $script:selLine){ $right = '当前 · ' + $right }
+      if($script:selLine -and $t.id -eq $script:selLine){ $right = '✓ 当前 · ' + $right }
 
       $script:recLines += [pscustomobject]@{ id=[string]$t.id; line=[string]$lineKey[$t.id]; name=[string]$nm; ok=(($dot -eq $C.green) -and $authOk -and $provOk) }
       New-ProviderRow $t.id $nm $right $frac $dot $fill $tip $y ($mdl.Count -gt 0) $exp $C.rowBrd
@@ -718,7 +874,7 @@ function Build-Rows{
         $script:bzRowY = $y
         foreach($cl in $script:rowCtl[-1].Controls){
           if($cl -is [System.Windows.Forms.Label] -and $cl.Width -ge 100 -and $cl.TextAlign -eq 'MiddleRight'){
-            $cl.Location = New-Object Drawing.Point(196,6); $cl.Size = New-Object Drawing.Size(124,20)
+            $cl.Location = New-Object Drawing.Point(194,6); $cl.Size = New-Object Drawing.Size(158,20)
           }
         }
       }
@@ -726,7 +882,7 @@ function Build-Rows{
         $script:dsRowY = $y
         foreach($cl in $script:rowCtl[-1].Controls){
           if($cl -is [System.Windows.Forms.Label] -and $cl.Width -ge 100 -and $cl.TextAlign -eq 'MiddleRight'){
-            $cl.Location = New-Object Drawing.Point(196,6); $cl.Size = New-Object Drawing.Size(124,20)
+            $cl.Location = New-Object Drawing.Point(194,6); $cl.Size = New-Object Drawing.Size(158,20)
           }
         }
       }
@@ -736,6 +892,7 @@ function Build-Rows{
         foreach($m in $mdl){
           $usable = $provOk
           if($null -ne $m.usable){ $usable = $usable -and [bool]$m.usable }
+          if($allProbeRed){ $usable = $false }   # 全红: 模型行一律按不可用(红)显示
           $q = $m.quota
           $mfrac=1.0; $mfill=$C.green; $mright='共享池'; $mrc=$C.dim
           if(-not $usable){
@@ -841,7 +998,7 @@ function Build-Rows{
   }
   if($script:dsBtn){
     if($script:dsRowY -ge 0){
-      $script:dsBtn.Location = New-Object Drawing.Point(($ROWX+$ROWW-42), ($script:dsRowY+6))
+      $script:dsBtn.Location = New-Object Drawing.Point(($ROWX+150), ($script:dsRowY+6))   # 文字栏左缘(194)之外, 不压字
       if($script:dsBtn.Parent -ne $list){ $list.Controls.Add($script:dsBtn) }
       $script:dsBtn.Visible = $true
       $script:dsBtn.BringToFront()
@@ -858,6 +1015,8 @@ function Build-Rows{
     }
   }catch{}
   Write-Recommendation
+  # 线路异常提醒（只读 TOKENS.json 的 probe 结果，不额外发请求）
+  try{ Update-AlertPanel $f }catch{ Write-Log ('alert panel failed: ' + $_.Exception.Message) }
   return $n
 }
 
@@ -870,6 +1029,23 @@ $i9=$cm.Items.Add('⚙ 设置（手写接入）…'); $i9.Add_Click({ Show-Setti
 $i3=$cm.Items.Add('打开台账目录');    $i3.Add_Click({ Start-Process explorer.exe $TOKDIR })
 $i7=$cm.Items.Add('复制推荐可用线路'); $i7.Add_Click({ try{ [Windows.Forms.Clipboard]::SetText((Get-Content (Join-Path $TOKDIR 'recommended-line.json') -Raw)) }catch{} })
 $i8=$cm.Items.Add('排序: 推荐序/自动'); $i8.Add_Click({ if($script:sortMode -eq 'auto'){ $script:sortMode='recommend' }else{ $script:sortMode='auto' }; [void](Build-Rows) })
+$i8b=$cm.Items.Add('警戒值配置（warn.json）'); $i8b.Add_Click({ try{ Start-Process notepad $WARNJSON }catch{} })
+$iAl1=$cm.Items.Add('异常提醒 开/关')
+$iAl1.Add_Click({
+  $script:alertEnabled = -not $script:alertEnabled
+  if(-not $script:alertEnabled -and $script:alertForm){ $script:alertForm.Hide() }
+  $script:alertSig = ''
+  Write-Log ('alert enabled=' + $script:alertEnabled)
+  [void](Build-Rows)
+})
+$iAl2=$cm.Items.Add('查看全部线路状态（含长期不可用）')
+$iAl2.Add_Click({
+  $script:alertForceShow = $true
+  $script:alertExpanded  = $true
+  $script:alertHidden    = $false
+  $script:alertSig       = ''
+  [void](Build-Rows)
+})
 $i10=$cm.Items.Add('设置百智云积分…')
 $i10.Add_Click({
   $df = New-Object System.Windows.Forms.Form

@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """自动挑选「可用 + 高分档 + 低延迟」的模型线路，写入本机各 agent 配置。
 
@@ -36,10 +36,24 @@ P_SELECTED = os.path.join(TOKDIR, "selected-line.json")
 P_LOCK = os.path.join(TOKDIR, "model-lock.json")
 
 P_OPENCODE = os.environ.get("OPENCODE_CONFIG", os.path.join(HOME, ".config", "opencode", "opencode.json"))
-P_HERMES = os.path.join(os.environ.get("LOCALAPPDATA", os.path.join(HOME, "AppData", "Local")), "hermes", "config.yaml")
+def _hermes_config_path():
+    # LOCALAPPDATA 在部分 shell 里为空, 回退 HOME 拼 AppData/Local; 再兜底 HERMES_HOME
+    for base in (os.environ.get("LOCALAPPDATA"),
+                 os.path.join(HOME, "AppData", "Local") if HOME else None,
+                 os.environ.get("HERMES_HOME")):
+        if base:
+            q = os.path.join(base, "hermes", "config.yaml")
+            if os.path.isfile(q):
+                return q
+    return os.path.join(os.environ.get("LOCALAPPDATA") or "", "hermes", "config.yaml")
+
+
+P_HERMES = _hermes_config_path()
 P_ZCODE = os.path.join(HOME, ".zcode", "v2", "provider_config.json")
 
 TIER_RANK = {"S": 4, "A": 3, "B": 2, "C": 1}
+# 按量付费线路: 排序时整体降权, 让限时/免费额度先用完 (省钱)
+PAID_LINES = {"deepseek-official"}
 NO_PROBE_MS = 999999
 
 # 台账线路 id -> opencode provider id
@@ -83,7 +97,7 @@ HERMES_MODEL = {
     ("free-amd", "DeepSeek-V4.1-Flash"): ("custom", "DeepSeek-V4.1-Flash"),
     ("free-amd", "Gemma-4-31B-IT"): ("custom", "Gemma-4-31B-IT"),
     ("tokenrouter", "deepseek/deepseek-v4.1-flash-1017-free"):
-        ("custom", "deepseek/deepseek-v4.1-flash-1017-free"),
+        ("custom:tokenrouter", "deepseek/deepseek-v4.1-flash-1017-free"),
 }
 for _mid in (
     "deepseek-v4.1-flash-free", "big-pickle", "nemotron-3.5-super-vl-free",
@@ -189,8 +203,11 @@ def live_probe(pool):
             d = dict(x)
             d["why"] = "实时探活 %s %s" % (r["status"], r["error"][:60])
             dropped.append(d)
+    # 注意: 这里不能再按 tier 重排, 否则会盖掉 candidates() 的「限时额度优先」顺序
     for z in kept:
-        z["score"] = (z["tier_rank"], 1 if z["probe_ok"] else 0, -z["ms"])
+        z["score"] = ((-z["exp_days"]) if z.get("exp_days") is not None else -1e9,
+                      (-1 if z["line"] in PAID_LINES else 0),
+                      z["tier_rank"], 1 if z["probe_ok"] else 0, -z["ms"])
     kept.sort(key=lambda x: x["score"], reverse=True)
     return kept, dropped, checked
 
@@ -282,11 +299,15 @@ def candidates():
                 except Exception:
                     pass
             exp = t.get("expires_at")
+            exp_days = None
             if exp:
                 try:
                     now = datetime.datetime.now(datetime.timezone.utc).astimezone()
-                    if datetime.datetime.fromisoformat(str(exp)) < now:
+                    exp_dt = datetime.datetime.fromisoformat(str(exp))
+                    if exp_dt < now:
                         reasons.append("key已过期 " + str(exp)[:10])
+                    else:
+                        exp_days = max(0.0, (exp_dt - now).total_seconds() / 86400.0)
                 except Exception:
                     pass
             if reasons:
@@ -300,6 +321,8 @@ def candidates():
                     note = "DS 官方余额 ¥%.2f（按量付费）" % bal
             elif tid == "baizhi" and credit.get("remaining") is not None:
                 note = "百智云积分 %s（积分计费）" % credit["remaining"]
+            if exp_days is not None:
+                note = (note + "；" if note else "") + "限时额度 剩 %.1f 天" % exp_days
             out.append({
                 "line": tid,
                 "model": name,
@@ -310,7 +333,14 @@ def candidates():
                 "ms": ms if ms is not None else NO_PROBE_MS,
                 "opencode_provider": OPENCODE_PROVIDER.get(tid),
                 "zcode_provider": ZCODE_PROVIDER.get(tid),
-                "score": (TIER_RANK.get(tier, 0), 1 if probe.get("ok") else 0,
+                "exp_days": exp_days,
+                # 排序键(越大越优先):
+                #   1) 限时额度优先, 且剩余天数越少越靠前(先用完别浪费); 无期限=-1e9 垫底
+                #   2) 付费线路再降一档, 免费/积分优先
+                #   3) 同档内比 tier / 探活 / 延迟
+                "score": ((-exp_days) if exp_days is not None else -1e9,
+                          (-1 if tid in PAID_LINES else 0),
+                          TIER_RANK.get(tier, 0), 1 if probe.get("ok") else 0,
                           -(ms if ms is not None else NO_PROBE_MS)),
             })
     out.sort(key=lambda x: x["score"], reverse=True)
@@ -452,8 +482,8 @@ def main():
     if not args.quiet:
         print(json.dumps({
             "ok": True,
-            "selected": {k: best[k] for k in ("line", "model", "tier", "probe_ok", "ms", "opencode_provider", "note")},
-            "runners_up": [{k: x[k] for k in ("line", "model", "tier", "ms")} for x in pool[1:5]],
+            "selected": {k: best[k] for k in ("line", "model", "tier", "probe_ok", "ms", "opencode_provider", "note", "exp_days")},
+            "runners_up": [{k: x[k] for k in ("line", "model", "tier", "ms", "exp_days")} for x in pool[1:5]],
             "applied": results if args.apply else "dry-run",
             "selected_file": P_SELECTED if args.apply else None,
         }, ensure_ascii=False, indent=2))

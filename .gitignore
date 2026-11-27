@@ -14,3 +14,9 @@ TokenMeter.ps1.v*bak
 TokenMeter.ps1.bak*
 baizhi_daily.ps1.v*bak
 baizhi_daily.ps1.bak*
+select_model.py.v*bak
+select_model.py.bak*
+.v18bak
+
+# one-off dev patch scripts
+patch_ps1_*.py
