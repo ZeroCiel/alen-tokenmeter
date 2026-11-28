@@ -52,6 +52,18 @@ function Invoke-AutoSelect {
   }
 }
 
+# ===== 模型自动导入同步（额度条线路状态 -> opencode.json，每 2h + 启动时一次）=====
+function Invoke-ModelSync {
+  $py = Join-Path $base 'sync_opencode_models.py'
+  if(-not (Test-Path $py)){ return }
+  try{
+    Start-Process -FilePath 'python' -ArgumentList @($py, '--quiet') -WindowStyle Hidden | Out-Null
+    Write-Log 'model-sync started (background)'
+  }catch{
+    Write-Log ('model-sync failed: ' + $_.Exception.Message)
+  }
+}
+
 # ===== 百智云每日领积分（配合额度条的控件 + 每日自动）=====
 function Start-BaizhiDailyBackground {
   $ps = Join-Path $base 'baizhi_daily.ps1'
@@ -850,7 +862,11 @@ function Build-Rows{
           $tip += ("`n警戒值 {0}（剩余低于它会变红条）" -f $wv)
         }
       }
-      if(-not $authOk){ $dot=$C.red; $fill=$C.red; $right=('key ' + $authCode) }
+      if(-not $authOk){
+        $dot=$C.red; $fill=$C.red
+        if($t.id -eq 'deepseek-official'){ $right=$right+'·key'+$authCode }   # DS 行: 余额与 402 并显
+        else{ $right=('key ' + $authCode) }
+      }
 
       $provOk = ($t.status -eq 'active')
       # allProbeRed 时不在这里改红: 行按用户要求灰显「不可用」, 模型行才全红
@@ -874,7 +890,7 @@ function Build-Rows{
         $script:bzRowY = $y
         foreach($cl in $script:rowCtl[-1].Controls){
           if($cl -is [System.Windows.Forms.Label] -and $cl.Width -ge 100 -and $cl.TextAlign -eq 'MiddleRight'){
-            $cl.Location = New-Object Drawing.Point(194,6); $cl.Size = New-Object Drawing.Size(158,20)
+            $cl.Location = New-Object Drawing.Point(194,6); $cl.Size = New-Object Drawing.Size(114,20)   # 给行末「领取」按钮让位
           }
         }
       }
@@ -882,7 +898,7 @@ function Build-Rows{
         $script:dsRowY = $y
         foreach($cl in $script:rowCtl[-1].Controls){
           if($cl -is [System.Windows.Forms.Label] -and $cl.Width -ge 100 -and $cl.TextAlign -eq 'MiddleRight'){
-            $cl.Location = New-Object Drawing.Point(194,6); $cl.Size = New-Object Drawing.Size(158,20)
+            $cl.Location = New-Object Drawing.Point(194,6); $cl.Size = New-Object Drawing.Size(114,20)   # 给行末「充值」按钮让位
           }
         }
       }
@@ -998,7 +1014,7 @@ function Build-Rows{
   }
   if($script:dsBtn){
     if($script:dsRowY -ge 0){
-      $script:dsBtn.Location = New-Object Drawing.Point(($ROWX+150), ($script:dsRowY+6))   # 文字栏左缘(194)之外, 不压字
+      $script:dsBtn.Location = New-Object Drawing.Point(($ROWX+$ROWW-42), ($script:dsRowY+6))   # 行末右缘, 文字栏(至308)之后
       if($script:dsBtn.Parent -ne $list){ $list.Controls.Add($script:dsBtn) }
       $script:dsBtn.Visible = $true
       $script:dsBtn.BringToFront()
@@ -1178,6 +1194,13 @@ $script:bzTimer = New-Object System.Windows.Forms.Timer
 $script:bzTimer.Interval = 1800000
 $script:bzTimer.Add_Tick({ Start-BaizhiDailyBackground; [void](Build-Rows) })
 $script:bzTimer.Start()
+
+# 每 2 小时把额度条线路状态同步进 opencode.json（导入可用/删除不可用），启动时先跑一次
+$script:syncTimer = New-Object System.Windows.Forms.Timer
+$script:syncTimer.Interval = 7200000
+$script:syncTimer.Add_Tick({ Invoke-ModelSync })
+$script:syncTimer.Start()
+Invoke-ModelSync
 
 $rows = Build-Rows
 Write-Log ('shown rows=' + $rows)

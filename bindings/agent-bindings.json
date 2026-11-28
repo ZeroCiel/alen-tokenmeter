@@ -1,0 +1,64 @@
+{
+  "version": 1,
+  "note": "大肥鱼(微信入口)作为控制器, 给各 Agent 分配模型。免费/限时额度优先; 自动按档位+延迟排序; 额度耗尽切付费兜底。",
+  "policy": {
+    "prefer_free": true,
+    "auto_arrange": true,
+    "paid_fallback": true,
+    "paid_lines": [
+      "deepseek-official",
+      "scnet-tokenplan",
+      "baizhi",
+      "apinex"
+    ],
+    "rule": "1) 免费/限时额度优先(剩余天数少的先用完); 2) 同档内按 tier / 探活 / 延迟排; 3) 该 Agent 无免费可用时, 才切付费线路"
+  },
+  "agents": [
+    {
+      "id": "daji",
+      "name": "大肥鱼(微信Agent bot)",
+      "role": "controller",
+      "target": "opencode",
+      "prefer_free": true,
+      "paid_fallback": true,
+      "note": "微信入口/共同负责; 绑定模型写到 opencode.json(全局 model), 由它分发任务"
+    },
+    {
+      "id": "opencode",
+      "name": "OpenCode",
+      "role": "code",
+      "target": "opencode",
+      "prefer_free": true,
+      "paid_fallback": true,
+      "note": "主代码 Agent; 与大肥鱼共用 opencode.json 的 model"
+    },
+    {
+      "id": "hermes",
+      "name": "Hermes 小赫",
+      "role": "assistant",
+      "target": "hermes",
+      "prefer_free": true,
+      "paid_fallback": true,
+      "note": "仅支持台账中已做 HERMES_MODEL 映射的线路"
+    },
+    {
+      "id": "zcode",
+      "name": "ZCode",
+      "role": "desktop",
+      "target": "zcode",
+      "prefer_free": true,
+      "paid_fallback": true,
+      "note": "仅支持 provider_config.json 的 providerOrder 里列出的线路; 运行中改会被内存态覆盖, 需退出后应用"
+    },
+    {
+      "id": "dsh",
+      "name": "DeepSeek Harness",
+      "role": "code",
+      "target": "dsh",
+      "prefer_free": true,
+      "paid_fallback": true,
+      "config": "~/.dsh/profiles/desktop/cordis.patch.yml",
+      "note": "由 select_model.apply_dsh() 写 agent-default-model；DSH 重启后对新会话生效"
+    }
+  ]
+}

@@ -102,12 +102,17 @@ def main():
                 "count": 1,
                 "first": iso(tms),
                 "last": iso(tms),
+                "first_ms": tms,
                 "last_ms": tms,
                 "message_id": mid,
             }
         else:
             g["count"] += 1
-            if tms < g["last_ms"]:
+            # first=最早一次, last=最近一次. 行序不保证按时间, 所以两个都要比
+            if tms < g["first_ms"]:
+                g["first"] = iso(tms)
+                g["first_ms"] = tms
+            if tms > g["last_ms"]:
                 g["last"] = iso(tms)
                 g["last_ms"] = tms
                 g["message_id"] = mid
@@ -115,6 +120,7 @@ def main():
     items = sorted(groups.values(), key=lambda x: x["last_ms"], reverse=True)
     for it in items:
         it.pop("last_ms", None)
+        it.pop("first_ms", None)
     result["errors"] = items[:40]
     write(result, a.quiet)
 

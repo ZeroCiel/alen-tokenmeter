@@ -51,6 +51,19 @@ def _hermes_config_path():
 P_HERMES = _hermes_config_path()
 P_ZCODE = os.path.join(HOME, ".zcode", "v2", "provider_config.json")
 
+# DSH(DeepSeek Harness) 配置文件 + 额度条落地模块（同目录 dsh_sync.py）
+P_DSH = os.path.join(HOME, ".dsh", "profiles", "desktop", "cordis.patch.yml")
+try:
+    from dsh_sync import (apply_dsh, apply_dsh_pool, apply_display,  # noqa: E402
+                         dsh_target, DSH_PROVIDER, DSH_UNUSABLE)
+except Exception:  # 缺 dsh_sync.py 时退化成「未接线」，不再谎报跟随
+    apply_dsh = None
+    apply_dsh_pool = None
+    apply_display = None
+    dsh_target = None
+    DSH_PROVIDER = {}
+    DSH_UNUSABLE = set()
+
 TIER_RANK = {"S": 4, "A": 3, "B": 2, "C": 1}
 # 按量付费线路: 排序时整体降权, 让限时/免费额度先用完 (省钱)
 PAID_LINES = {"deepseek-official"}
@@ -80,6 +93,8 @@ ZCODE_PROVIDER = {
     "modelscope": "custom-modelscope",
     "zhipu": "zai-standard-api",
     "magpie-zen": "custom-magpie",
+    "opencode-zen-builtin": "custom-magpie",  # 2026-11-28: 内置 zen 线路在 zcode 走同一网关条目
+    "tokenrouter": "custom-tokenrouter",      # 2026-11-28: 原缺映射, 选中时 zcode 被跳过
     "deepseek-official": "deepseek",
     "baizhi": "new-provider",
 }
@@ -364,7 +379,6 @@ def apply_opencode(best, results):
         d["model"] = model_id
         write_json(p, d)
     results["opencode"] = {"ok": True, "model": model_id, "changed": changed}
-    results["dsh"] = {"ok": True, "why": "DSH 驱动同一份 opencode 配置，自动跟随"}
 
 
 def apply_hermes(best, results):
@@ -469,6 +483,15 @@ def main():
             apply_opencode(best, results)
             apply_hermes(best, results)
             apply_zcode(best, results)
+            if apply_dsh_pool:
+                apply_dsh_pool(pool, results)
+            if apply_display:  # 额度/到期/可用性写进 DSH 供应商显示名（静默）
+                try:
+                    n = apply_display(False, verbose=False)
+                    if n:
+                        results["dsh_display"] = {"ok": True, "updated": n}
+                except Exception as e:
+                    results["dsh_display"] = {"ok": False, "why": str(e)[:80]}
         rec = {
             "at": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
             "line": best["line"], "model": best["model"], "tier": best["tier"],

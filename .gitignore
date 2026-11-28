@@ -20,3 +20,10 @@ select_model.py.bak*
 
 # one-off dev patch scripts
 patch_ps1_*.py
+
+# 本机密钥与本地状态：绝不入库（provider_registry.json 含明文 API key）
+provider_registry.json
+*.bak
+*.bak*
+*.bak-*
+bindings/*.bak*
